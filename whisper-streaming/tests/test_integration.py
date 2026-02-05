@@ -26,7 +26,7 @@ async def test_streaming_session_full_cycle(mock_backend):
     from server.transcriber import PromptStrategy
 
     strategy = PromptStrategy(mock_backend)
-    session = StreamingSession(strategy=strategy, strategy_name="prompt")
+    session = StreamingSession(strategy=strategy)
 
     # Simulate streaming: add multiple audio frames
     for _ in range(10):
@@ -63,7 +63,7 @@ async def test_streaming_session_context_handling(mock_backend):
     )
 
     strategy = ContextStrategy(mock_backend)
-    session = StreamingSession(strategy=strategy, strategy_name="context")
+    session = StreamingSession(strategy=strategy)
 
     # First utterance
     audio = np.zeros(16000, dtype=np.float32)  # 1 second

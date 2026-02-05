@@ -11,6 +11,8 @@ from server.backends.base import TranscriptResult, Segment
 @pytest.fixture
 def mock_strategy():
     strategy = MagicMock()
+    strategy.uses_context = False
+    strategy.uses_prompt = True
     strategy.transcribe.return_value = TranscriptResult(
         text="hello",
         segments=[Segment(start=0.0, end=1.0, text="hello")],
@@ -22,7 +24,7 @@ def mock_strategy():
 
 @pytest.fixture
 def session(mock_strategy):
-    return StreamingSession(strategy=mock_strategy, strategy_name="prompt")
+    return StreamingSession(strategy=mock_strategy)
 
 
 def test_handle_audio_frame(session):

@@ -5,6 +5,9 @@ from .backends.base import WhisperBackend, TranscriptResult
 
 
 class TranscriptionStrategy(ABC):
+    uses_context: bool = False
+    uses_prompt: bool = False
+
     def __init__(self, backend: WhisperBackend):
         self.backend = backend
 
@@ -20,6 +23,7 @@ class TranscriptionStrategy(ABC):
 
 class PromptStrategy(TranscriptionStrategy):
     """Use previous transcript as initial prompt."""
+    uses_prompt = True
 
     def transcribe(
         self,
@@ -37,6 +41,7 @@ class PromptStrategy(TranscriptionStrategy):
 
 class ContextStrategy(TranscriptionStrategy):
     """Context audio overlap strategy. Session handles prepending/trimming."""
+    uses_context = True
 
     def transcribe(
         self,
@@ -49,6 +54,8 @@ class ContextStrategy(TranscriptionStrategy):
 
 class HybridStrategy(TranscriptionStrategy):
     """Combine context audio and prompt conditioning. Session handles context."""
+    uses_context = True
+    uses_prompt = True
 
     def transcribe(
         self,

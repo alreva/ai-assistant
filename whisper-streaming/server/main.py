@@ -10,6 +10,7 @@ from websockets.asyncio.server import serve
 from .backends import create_backend
 from .backends.base import Segment
 from .transcriber import PromptStrategy, ContextStrategy, HybridStrategy
+from .utils import dedup_repeated_phrases, samples_to_ms, ms_to_samples
 
 # Configure logging
 logging.basicConfig(
@@ -23,15 +24,14 @@ logger = logging.getLogger(__name__)
 class StreamingSession:
     """Manages per-connection streaming state."""
 
-    def __init__(self, strategy, strategy_name: str, sample_rate: int = 16000):
+    def __init__(self, strategy, sample_rate: int = 16000):
         self.strategy = strategy
-        self.strategy_name = strategy_name
         self.sample_rate = sample_rate
         self.audio_buffer: list[np.ndarray] = []
         self.previous_transcript = ""
         self.context_audio: np.ndarray | None = None
         self.context_overlap_ms = 1000
-        self.partial_max_ms = 3000  # max audio for partial transcription
+        self.partial_max_ms = 3000
 
     def add_audio(self, audio: np.ndarray):
         """Add audio frame to buffer."""
@@ -42,78 +42,65 @@ class StreamingSession:
         if not self.audio_buffer:
             return 0
         total_samples = sum(len(chunk) for chunk in self.audio_buffer)
-        return (total_samples / self.sample_rate) * 1000
+        return samples_to_ms(total_samples, self.sample_rate)
 
-    def _get_audio_for_transcription(self) -> np.ndarray:
-        """Get audio array, prepending context if using context/hybrid strategy."""
-        audio = np.concatenate(self.audio_buffer).flatten()
+    def _get_full_audio(self) -> np.ndarray:
+        """Get full audio buffer as single array."""
+        return np.concatenate(self.audio_buffer).flatten()
 
-        if self.strategy_name in ("context", "hybrid") and self.context_audio is not None:
+    def _get_audio_with_context(self) -> np.ndarray:
+        """Get audio array, prepending context if strategy uses it."""
+        audio = self._get_full_audio()
+        if self.strategy.uses_context and self.context_audio is not None:
             audio = np.concatenate([self.context_audio, audio])
-
         return audio
 
-    def _get_context_duration(self) -> float:
+    def _get_context_duration_sec(self) -> float:
         """Get context audio duration in seconds."""
-        if self.strategy_name in ("context", "hybrid") and self.context_audio is not None:
+        if self.strategy.uses_context and self.context_audio is not None:
             return len(self.context_audio) / self.sample_rate
         return 0.0
 
     def _get_tail_audio(self, max_ms: float) -> np.ndarray:
         """Get the last max_ms of audio from the buffer."""
-        max_samples = int(self.sample_rate * max_ms / 1000)
-        # Walk backwards through chunks to collect enough samples
-        chunks = []
-        total = 0
-        for chunk in reversed(self.audio_buffer):
-            chunks.append(chunk)
-            total += len(chunk)
-            if total >= max_samples:
-                break
-        chunks.reverse()
-        audio = np.concatenate(chunks).flatten()
-        if len(audio) > max_samples:
-            audio = audio[-max_samples:]
-        return audio
+        audio = self._get_full_audio()
+        max_samples = ms_to_samples(max_ms, self.sample_rate)
+        return audio[-max_samples:] if len(audio) > max_samples else audio
 
-    @staticmethod
-    def _dedup_text(text: str, max_repeats: int = 3) -> str:
-        """Remove repeated words/phrases caused by Whisper hallucination."""
-        words = text.split()
-        if len(words) <= max_repeats:
-            return text
-        # Scan for repetition starting at any position
-        for start in range(len(words)):
-            for phrase_len in range(1, min(4, (len(words) - start) // 2) + 1):
-                phrase = words[start:start + phrase_len]
-                count = 0
-                i = start
-                while i + phrase_len <= len(words):
-                    if words[i:i + phrase_len] == phrase:
-                        count += 1
-                        i += phrase_len
-                    else:
-                        break
-                if count > max_repeats:
-                    # Truncate: keep everything before the repetition + one instance
-                    return " ".join(words[:start + phrase_len])
-        return text
+    def _build_kwargs(self) -> dict:
+        """Build kwargs for strategy based on its capabilities."""
+        kwargs = {}
+        if self.strategy.uses_prompt and self.previous_transcript:
+            kwargs["previous_transcript"] = self.previous_transcript
+        return kwargs
+
+    def _trim_segments_after_context(self, segments: list[Segment], context_duration: float) -> list[Segment]:
+        """Filter and adjust segments to exclude context portion."""
+        return [
+            Segment(
+                start=s.start - context_duration,
+                end=s.end - context_duration,
+                text=s.text
+            )
+            for s in segments if s.end > context_duration
+        ]
+
+    def _update_state_for_next_segment(self, text: str):
+        """Update context and transcript state after finalizing."""
+        raw_audio = self._get_full_audio()
+        overlap_samples = ms_to_samples(self.context_overlap_ms, self.sample_rate)
+        self.context_audio = raw_audio[-overlap_samples:] if len(raw_audio) > overlap_samples else raw_audio
+        self.previous_transcript = text
+        self.audio_buffer = []
 
     def get_partial(self) -> dict:
         """Transcribe current buffer and return partial result."""
         if not self.audio_buffer:
             return {"type": "partial", "text": "", "processing_time_ms": 0}
 
-        # Use sliding window for partials to keep transcription fast
         audio = self._get_tail_audio(self.partial_max_ms)
-
-        kwargs = {}
-        if self.strategy_name in ("prompt", "hybrid") and self.previous_transcript:
-            kwargs["previous_transcript"] = self.previous_transcript
-
-        result = self.strategy.transcribe(audio, self.sample_rate, **kwargs)
-
-        text = self._dedup_text(result.text)
+        result = self.strategy.transcribe(audio, self.sample_rate, **self._build_kwargs())
+        text = dedup_repeated_phrases(result.text)
 
         return {
             "type": "partial",
@@ -126,35 +113,18 @@ class StreamingSession:
         if not self.audio_buffer:
             return {"type": "final", "text": "", "segments": [], "language": "unknown", "processing_time_ms": 0}
 
-        audio = self._get_audio_for_transcription()
+        audio = self._get_audio_with_context()
+        result = self.strategy.transcribe(audio, self.sample_rate, **self._build_kwargs())
 
-        kwargs = {}
-        if self.strategy_name in ("prompt", "hybrid") and self.previous_transcript:
-            kwargs["previous_transcript"] = self.previous_transcript
-
-        result = self.strategy.transcribe(audio, self.sample_rate, **kwargs)
-
-        # For context/hybrid, filter segments after context
         segments = result.segments
         text = result.text
-        if self.strategy_name in ("context", "hybrid") and self.context_audio is not None:
-            context_duration = self._get_context_duration()
-            segments = [
-                Segment(start=s.start - context_duration, end=s.end - context_duration, text=s.text)
-                for s in result.segments if s.end > context_duration
-            ]
+
+        if self.strategy.uses_context and self.context_audio is not None:
+            context_duration = self._get_context_duration_sec()
+            segments = self._trim_segments_after_context(result.segments, context_duration)
             text = " ".join(s.text for s in segments)
 
-        # Update state for next segment
-        raw_audio = np.concatenate(self.audio_buffer).flatten()
-        overlap_samples = int(self.sample_rate * self.context_overlap_ms / 1000)
-        if len(raw_audio) > overlap_samples:
-            self.context_audio = raw_audio[-overlap_samples:]
-        else:
-            self.context_audio = raw_audio
-
-        self.previous_transcript = text
-        self.audio_buffer = []
+        self._update_state_for_next_segment(text)
 
         return {
             "type": "final",
@@ -187,9 +157,8 @@ def create_app():
     backend = create_backend()
     backend.load_model(model_name)
 
-    # Warmup: run a dummy transcription to force model download and loading
     logger.info("Warming up model...")
-    warmup_audio = np.zeros(16000, dtype=np.float32)  # 1 second of silence
+    warmup_audio = np.zeros(16000, dtype=np.float32)
     backend.transcribe(warmup_audio, 16000)
     logger.info("Model ready")
 
@@ -218,7 +187,7 @@ def create_app():
         logger.info(f"Client connected: {client_addr} -> /{strategy_name}")
 
         strategy = strategies[strategy_name]
-        session = StreamingSession(strategy=strategy, strategy_name=strategy_name)
+        session = StreamingSession(strategy=strategy)
 
         partial_interval_ms = int(os.environ.get("PARTIAL_INTERVAL_MS", "500"))
         last_partial_time = asyncio.get_event_loop().time()
@@ -232,7 +201,6 @@ def create_app():
                 if msg_type == "audio_frame":
                     handle_audio_frame(message, session)
 
-                    # Check if we should send a partial
                     current_time = loop.time()
                     elapsed_ms = (current_time - last_partial_time) * 1000
 
@@ -273,9 +241,8 @@ async def main():
     logger.info("  /ws/transcribe/context - Context audio + trim")
     logger.info("  /ws/transcribe/hybrid  - Combined strategy")
 
-    # Increase max message size to 10MB for longer audio chunks
     async with serve(handler, host, port, max_size=10 * 1024 * 1024):
-        await asyncio.Future()  # run forever
+        await asyncio.Future()
 
 
 if __name__ == "__main__":

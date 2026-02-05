@@ -22,6 +22,27 @@ def mock_backend():
     return backend
 
 
+def test_prompt_strategy_attributes():
+    """PromptStrategy uses prompt but not context."""
+    strategy = PromptStrategy(MagicMock())
+    assert strategy.uses_prompt is True
+    assert strategy.uses_context is False
+
+
+def test_context_strategy_attributes():
+    """ContextStrategy uses context but not prompt."""
+    strategy = ContextStrategy(MagicMock())
+    assert strategy.uses_prompt is False
+    assert strategy.uses_context is True
+
+
+def test_hybrid_strategy_attributes():
+    """HybridStrategy uses both context and prompt."""
+    strategy = HybridStrategy(MagicMock())
+    assert strategy.uses_prompt is True
+    assert strategy.uses_context is True
+
+
 def test_prompt_strategy_passes_initial_prompt(mock_backend):
     strategy = PromptStrategy(mock_backend)
     audio = np.zeros(16000, dtype=np.float32)
