@@ -39,12 +39,14 @@ class StreamingClient:
         strategy: str = "prompt",
         sample_rate: int = 16000,
         silence_threshold_ms: int = 300,
+        max_speech_ms: int = 5000,
         min_energy: float = 0.01,
     ):
         self.server_url = f"{server_url}/ws/transcribe/{strategy}"
         self.strategy = strategy
         self.sample_rate = sample_rate
         self.silence_threshold_ms = silence_threshold_ms
+        self.max_speech_ms = max_speech_ms
         self.min_energy = min_energy
 
         self.vad = create_vad()
@@ -164,20 +166,28 @@ class StreamingClient:
                             speech_energy_sum += chunk_energy
                             speech_chunk_count += 1
 
-                        if not speech_detected and is_speaking:
-                            silence_count += 1
-                            if silence_count >= silence_chunks:
-                                # Check energy before finalizing
-                                avg_energy = speech_energy_sum / max(speech_chunk_count, 1)
-                                if avg_energy >= self.min_energy:
-                                    await ws.send(self._build_vad_end())
-                                else:
-                                    logger.debug(f"[skip] Energy too low ({avg_energy:.4f} < {self.min_energy})")
-                                is_speaking = False
-                                silence_count = 0
-                                speech_onset_count = 0
-                                speech_energy_sum = 0.0
-                                speech_chunk_count = 0
+                        # Check if we should finalize
+                        should_finalize = False
+                        if is_speaking:
+                            speech_duration_ms = speech_chunk_count * 30
+                            if not speech_detected:
+                                silence_count += 1
+                                if silence_count >= silence_chunks:
+                                    should_finalize = True
+                            if speech_duration_ms >= self.max_speech_ms:
+                                should_finalize = True
+
+                        if should_finalize:
+                            avg_energy = speech_energy_sum / max(speech_chunk_count, 1)
+                            if avg_energy >= self.min_energy:
+                                await ws.send(self._build_vad_end())
+                            else:
+                                logger.debug(f"[skip] Energy too low ({avg_energy:.4f} < {self.min_energy})")
+                            is_speaking = False
+                            silence_count = 0
+                            speech_onset_count = 0
+                            speech_energy_sum = 0.0
+                            speech_chunk_count = 0
 
                 finally:
                     response_task.cancel()
