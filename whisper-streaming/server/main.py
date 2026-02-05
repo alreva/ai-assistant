@@ -234,7 +234,12 @@ def create_app():
     logger.info(f"Loading {backend_type} backend with model '{model_name}'...")
     backend = create_backend()
     backend.load_model(model_name)
-    logger.info("Model loaded successfully")
+
+    # Warmup: run a dummy transcription to force model download and loading
+    logger.info("Warming up model...")
+    warmup_audio = np.zeros(16000, dtype=np.float32)  # 1 second of silence
+    backend.transcribe(warmup_audio, 16000)
+    logger.info("Model ready")
 
     strategies = {
         "prompt": PromptStrategy(backend),
