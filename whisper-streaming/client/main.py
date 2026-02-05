@@ -39,7 +39,7 @@ class StreamingClient:
         strategy: str = "prompt",
         sample_rate: int = 16000,
         silence_threshold_ms: int = 300,
-        min_energy: float = 0.005,
+        min_energy: float = 0.01,
     ):
         self.server_url = f"{server_url}/ws/transcribe/{strategy}"
         self.strategy = strategy
@@ -105,6 +105,7 @@ class StreamingClient:
         print(f"Connecting to {self.server_url}")
         print(f"Strategy: {self.strategy}")
         print(f"VAD: {os.environ.get('VAD_BACKEND', 'webrtc')}")
+        print(f"Min energy: {self.min_energy}")
         print("Press Ctrl+C to stop\n")
 
         async with websockets.connect(self.server_url, max_size=10 * 1024 * 1024) as ws:
@@ -112,6 +113,8 @@ class StreamingClient:
                 silence_count = 0
                 silence_chunks = int(self.silence_threshold_ms / 30)
                 is_speaking = False
+                speech_onset_count = 0
+                speech_onset_threshold = 3  # require 3 consecutive speech chunks (~90ms)
 
                 async def receive_responses():
                     """Background task to receive and handle responses."""
@@ -147,7 +150,12 @@ class StreamingClient:
 
                         if speech_detected:
                             silence_count = 0
-                            is_speaking = True
+                            if not is_speaking:
+                                speech_onset_count += 1
+                                if speech_onset_count >= speech_onset_threshold:
+                                    is_speaking = True
+                        else:
+                            speech_onset_count = 0
 
                         # Only send audio frames during speech
                         if is_speaking:
@@ -167,6 +175,7 @@ class StreamingClient:
                                     logger.debug(f"[skip] Energy too low ({avg_energy:.4f} < {self.min_energy})")
                                 is_speaking = False
                                 silence_count = 0
+                                speech_onset_count = 0
                                 speech_energy_sum = 0.0
                                 speech_chunk_count = 0
 
@@ -182,7 +191,9 @@ async def main():
     server = os.environ.get("SERVER_URL", "ws://localhost:8765")
     strategy = os.environ.get("STRATEGY", "prompt")
 
-    client = StreamingClient(server_url=server, strategy=strategy)
+    min_energy = float(os.environ.get("MIN_ENERGY", "0.01"))
+
+    client = StreamingClient(server_url=server, strategy=strategy, min_energy=min_energy)
     try:
         await client.run()
     except KeyboardInterrupt:

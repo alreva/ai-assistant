@@ -76,6 +76,29 @@ class StreamingSession:
             audio = audio[-max_samples:]
         return audio
 
+    @staticmethod
+    def _dedup_text(text: str, max_repeats: int = 3) -> str:
+        """Remove repeated words/phrases caused by Whisper hallucination."""
+        words = text.split()
+        if len(words) <= max_repeats:
+            return text
+        # Scan for repetition starting at any position
+        for start in range(len(words)):
+            for phrase_len in range(1, min(4, (len(words) - start) // 2) + 1):
+                phrase = words[start:start + phrase_len]
+                count = 0
+                i = start
+                while i + phrase_len <= len(words):
+                    if words[i:i + phrase_len] == phrase:
+                        count += 1
+                        i += phrase_len
+                    else:
+                        break
+                if count > max_repeats:
+                    # Truncate: keep everything before the repetition + one instance
+                    return " ".join(words[:start + phrase_len])
+        return text
+
     def get_partial(self) -> dict:
         """Transcribe current buffer and return partial result."""
         if not self.audio_buffer:
@@ -90,7 +113,7 @@ class StreamingSession:
 
         result = self.strategy.transcribe(audio, self.sample_rate, **kwargs)
 
-        text = result.text
+        text = self._dedup_text(result.text)
 
         return {
             "type": "partial",
