@@ -1,7 +1,7 @@
 # server/transcriber.py
 from abc import ABC, abstractmethod
 import numpy as np
-from .backends.base import WhisperBackend, TranscriptResult, Segment
+from .backends.base import WhisperBackend, TranscriptResult
 
 
 class TranscriptionStrategy(ABC):
@@ -36,85 +36,29 @@ class PromptStrategy(TranscriptionStrategy):
 
 
 class ContextStrategy(TranscriptionStrategy):
-    """Prepend context audio, trim result to new portion."""
+    """Context audio overlap strategy. Session handles prepending/trimming."""
 
     def transcribe(
         self,
         audio: np.ndarray,
         sample_rate: int,
-        context_audio: np.ndarray | None = None,
         **kwargs
     ) -> TranscriptResult:
-        if context_audio is not None:
-            combined = np.concatenate([context_audio, audio])
-            context_duration = len(context_audio) / sample_rate
-        else:
-            combined = audio
-            context_duration = 0.0
-
-        result = self.backend.transcribe(combined, sample_rate)
-
-        # Filter segments to only include those after context
-        new_segments = [
-            Segment(
-                start=s.start - context_duration,
-                end=s.end - context_duration,
-                text=s.text
-            )
-            for s in result.segments
-            if s.end > context_duration
-        ]
-
-        new_text = " ".join(s.text for s in new_segments)
-
-        return TranscriptResult(
-            text=new_text,
-            segments=new_segments,
-            language=result.language,
-            processing_time_ms=result.processing_time_ms
-        )
+        return self.backend.transcribe(audio, sample_rate)
 
 
 class HybridStrategy(TranscriptionStrategy):
-    """Combine context audio and prompt conditioning."""
+    """Combine context audio and prompt conditioning. Session handles context."""
 
     def transcribe(
         self,
         audio: np.ndarray,
         sample_rate: int,
-        context_audio: np.ndarray | None = None,
         previous_transcript: str | None = None,
         **kwargs
     ) -> TranscriptResult:
-        if context_audio is not None:
-            combined = np.concatenate([context_audio, audio])
-            context_duration = len(context_audio) / sample_rate
-        else:
-            combined = audio
-            context_duration = 0.0
-
-        result = self.backend.transcribe(
-            combined,
+        return self.backend.transcribe(
+            audio,
             sample_rate,
             initial_prompt=previous_transcript
-        )
-
-        # Filter segments to only include those after context
-        new_segments = [
-            Segment(
-                start=s.start - context_duration,
-                end=s.end - context_duration,
-                text=s.text
-            )
-            for s in result.segments
-            if s.end > context_duration
-        ]
-
-        new_text = " ".join(s.text for s in new_segments)
-
-        return TranscriptResult(
-            text=new_text,
-            segments=new_segments,
-            language=result.language,
-            processing_time_ms=result.processing_time_ms
         )

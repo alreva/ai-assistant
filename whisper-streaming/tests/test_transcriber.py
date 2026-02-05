@@ -22,7 +22,7 @@ def mock_backend():
     return backend
 
 
-def test_prompt_strategy(mock_backend):
+def test_prompt_strategy_passes_initial_prompt(mock_backend):
     strategy = PromptStrategy(mock_backend)
     audio = np.zeros(16000, dtype=np.float32)
 
@@ -34,36 +34,25 @@ def test_prompt_strategy(mock_backend):
     assert call_args.kwargs["initial_prompt"] == "hi"
 
 
-def test_context_strategy(mock_backend):
-    mock_backend.transcribe.return_value = TranscriptResult(
-        text="context hello world",
-        segments=[
-            Segment(start=0.0, end=0.5, text="context"),
-            Segment(start=0.5, end=1.5, text="hello world"),
-        ],
-        language="en",
-        processing_time_ms=100.0
-    )
-
+def test_context_strategy_just_transcribes(mock_backend):
+    """ContextStrategy just transcribes; StreamingSession handles context prepending/trimming."""
     strategy = ContextStrategy(mock_backend)
     audio = np.zeros(16000, dtype=np.float32)
-    context = np.zeros(8000, dtype=np.float32)
 
-    result = strategy.transcribe(audio, 16000, context_audio=context)
-
-    # Should trim context portion based on timestamps
-    assert "hello world" in result.text
-
-
-def test_hybrid_strategy(mock_backend):
-    strategy = HybridStrategy(mock_backend)
-    audio = np.zeros(16000, dtype=np.float32)
-    context = np.zeros(8000, dtype=np.float32)
-
-    result = strategy.transcribe(
-        audio, 16000,
-        context_audio=context,
-        previous_transcript="hi"
-    )
+    result = strategy.transcribe(audio, 16000)
 
     assert result.text == "hello world"
+    mock_backend.transcribe.assert_called_once()
+
+
+def test_hybrid_strategy_passes_initial_prompt(mock_backend):
+    """HybridStrategy passes prompt; StreamingSession handles context."""
+    strategy = HybridStrategy(mock_backend)
+    audio = np.zeros(16000, dtype=np.float32)
+
+    result = strategy.transcribe(audio, 16000, previous_transcript="hi")
+
+    assert result.text == "hello world"
+    mock_backend.transcribe.assert_called_once()
+    call_args = mock_backend.transcribe.call_args
+    assert call_args.kwargs["initial_prompt"] == "hi"

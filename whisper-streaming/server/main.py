@@ -178,54 +178,6 @@ def handle_vad_end(session: StreamingSession) -> dict:
     return session.get_final()
 
 
-async def handle_transcribe(message: str, strategy, strategy_name: str) -> str:
-    """Handle a transcription request and return JSON response."""
-    try:
-        data = json.loads(message)
-    except json.JSONDecodeError as e:
-        logger.warning(f"Invalid JSON received: {e}")
-        return json.dumps({"error": f"Invalid JSON: {e}", "code": "INVALID_JSON"})
-
-    try:
-        audio_b64 = data.get("audio")
-        if not audio_b64:
-            logger.warning("Request missing audio field")
-            return json.dumps({"error": "Missing audio", "code": "MISSING_AUDIO"})
-
-        audio_bytes = base64.b64decode(audio_b64)
-        audio = np.frombuffer(audio_bytes, dtype=np.float32)
-        sample_rate = data.get("sample_rate", 16000)
-        audio_duration_ms = len(audio) / sample_rate * 1000
-
-        kwargs = {}
-        if "previous_transcript" in data:
-            kwargs["previous_transcript"] = data["previous_transcript"]
-        if "context_audio" in data:
-            context_bytes = base64.b64decode(data["context_audio"])
-            kwargs["context_audio"] = np.frombuffer(context_bytes, dtype=np.float32)
-
-        logger.info(f"[{strategy_name}] Transcribing {audio_duration_ms:.0f}ms audio")
-        logger.debug(f"  kwargs: {list(kwargs.keys())}")
-
-        result = strategy.transcribe(audio, sample_rate, **kwargs)
-
-        logger.info(f"[{strategy_name}] Result ({result.processing_time_ms:.0f}ms): {result.text[:80]}{'...' if len(result.text) > 80 else ''}")
-
-        return json.dumps({
-            "text": result.text,
-            "segments": [
-                {"start": s.start, "end": s.end, "text": s.text}
-                for s in result.segments
-            ],
-            "language": result.language,
-            "processing_time_ms": result.processing_time_ms
-        })
-
-    except Exception as e:
-        logger.error(f"Transcription error: {e}", exc_info=True)
-        return json.dumps({"error": str(e), "code": "TRANSCRIBE_ERROR"})
-
-
 def create_app():
     """Create and configure the WebSocket server."""
     backend_type = os.environ.get("WHISPER_BACKEND", "mlx")

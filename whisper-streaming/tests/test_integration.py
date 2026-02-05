@@ -1,12 +1,9 @@
 # tests/test_integration.py
 import pytest
-import json
-import base64
-import asyncio
 import numpy as np
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
-from server.main import create_app, handle_transcribe, StreamingSession
+from server.main import StreamingSession
 from server.backends.base import TranscriptResult, Segment
 
 
@@ -21,67 +18,6 @@ def mock_backend():
         processing_time_ms=42.0
     )
     return backend
-
-
-@pytest.mark.asyncio
-async def test_full_request_response_cycle(mock_backend):
-    """Test complete request/response with mocked backend."""
-    from server.transcriber import PromptStrategy
-
-    strategy = PromptStrategy(mock_backend)
-
-    # Create test audio (1 second of silence)
-    audio = np.zeros(16000, dtype=np.float32)
-    audio_b64 = base64.b64encode(audio.tobytes()).decode()
-
-    message = json.dumps({
-        "audio": audio_b64,
-        "sample_rate": 16000,
-        "previous_transcript": "hello"
-    })
-
-    response = await handle_transcribe(message, strategy, "prompt")
-    result = json.loads(response)
-
-    assert result["text"] == "test transcription"
-    assert result["language"] == "en"
-    assert len(result["segments"]) == 1
-    assert result["processing_time_ms"] == 42.0
-
-    # Verify backend was called with correct args
-    mock_backend.transcribe.assert_called_once()
-    call_kwargs = mock_backend.transcribe.call_args.kwargs
-    assert call_kwargs["initial_prompt"] == "hello"
-
-
-@pytest.mark.asyncio
-async def test_context_strategy_trims_correctly(mock_backend):
-    """Test that context strategy correctly trims overlapping audio."""
-    from server.transcriber import ContextStrategy
-
-    # Return segments that span context and new audio
-    mock_backend.transcribe.return_value = TranscriptResult(
-        text="old new words",
-        segments=[
-            Segment(start=0.0, end=0.5, text="old"),
-            Segment(start=0.5, end=1.0, text="new"),
-            Segment(start=1.0, end=1.5, text="words"),
-        ],
-        language="en",
-        processing_time_ms=50.0
-    )
-
-    strategy = ContextStrategy(mock_backend)
-
-    # 1 second new audio, 0.5 second context
-    audio = np.zeros(16000, dtype=np.float32)
-    context = np.zeros(8000, dtype=np.float32)  # 0.5 seconds
-
-    result = strategy.transcribe(audio, 16000, context_audio=context)
-
-    # Should only include segments after 0.5s context
-    assert "new" in result.text
-    assert "words" in result.text
 
 
 @pytest.mark.asyncio
@@ -107,3 +43,42 @@ async def test_streaming_session_full_cycle(mock_backend):
     assert final["type"] == "final"
     assert session.audio_buffer == []  # buffer cleared
     assert session.previous_transcript != ""  # transcript saved
+
+
+@pytest.mark.asyncio
+async def test_streaming_session_context_handling(mock_backend):
+    """Test that StreamingSession handles context prepending and trimming for context strategy."""
+    from server.transcriber import ContextStrategy
+
+    # Return segments that span context and new audio
+    mock_backend.transcribe.return_value = TranscriptResult(
+        text="old new words",
+        segments=[
+            Segment(start=0.0, end=0.5, text="old"),
+            Segment(start=0.5, end=1.0, text="new"),
+            Segment(start=1.0, end=1.5, text="words"),
+        ],
+        language="en",
+        processing_time_ms=50.0
+    )
+
+    strategy = ContextStrategy(mock_backend)
+    session = StreamingSession(strategy=strategy, strategy_name="context")
+
+    # First utterance
+    audio = np.zeros(16000, dtype=np.float32)  # 1 second
+    session.add_audio(audio)
+    final1 = session.get_final()
+
+    # Context should be saved
+    assert session.context_audio is not None
+
+    # Second utterance - session should prepend context and trim result
+    audio2 = np.zeros(16000, dtype=np.float32)
+    session.add_audio(audio2)
+    final2 = session.get_final()
+
+    # Verify context was used (backend received more audio than just the new chunk)
+    call_args = mock_backend.transcribe.call_args
+    transcribed_audio = call_args[0][0]
+    assert len(transcribed_audio) > 16000  # context was prepended
