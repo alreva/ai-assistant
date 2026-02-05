@@ -7,6 +7,7 @@ import asyncio
 import logging
 import numpy as np
 import websockets
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,6 @@ class LatencyStats:
     """Track latency statistics."""
 
     def __init__(self):
-        self.round_trips: list[float] = []
         self.server_times: list[float] = []
 
     def record(self, server_ms: float):
@@ -32,25 +32,65 @@ class LatencyStats:
         return f"Transcriptions: {n} | Avg server time: {avg_srv:.0f}ms"
 
 
+@dataclass
+class SpeechState:
+    """Tracks speech detection state."""
+    is_speaking: bool = False
+    silence_count: int = 0
+    onset_count: int = 0
+    energy_sum: float = 0.0
+    chunk_count: int = 0
+
+    def reset(self):
+        """Reset all state after finalization."""
+        self.is_speaking = False
+        self.silence_count = 0
+        self.onset_count = 0
+        self.energy_sum = 0.0
+        self.chunk_count = 0
+
+    def start_speaking(self):
+        """Transition to speaking state."""
+        self.is_speaking = True
+
+    def add_chunk(self, energy: float):
+        """Record a speech chunk."""
+        self.energy_sum += energy
+        self.chunk_count += 1
+
+    def avg_energy(self) -> float:
+        """Get average energy of speech chunks."""
+        return self.energy_sum / max(self.chunk_count, 1)
+
+    def duration_ms(self, chunk_ms: int = 30) -> int:
+        """Get speech duration in milliseconds."""
+        return self.chunk_count * chunk_ms
+
+
 class StreamingClient:
     def __init__(
         self,
         server_url: str,
         strategy: str = "prompt",
         sample_rate: int = 16000,
+        chunk_ms: int = 30,
         silence_threshold_ms: int = 300,
         max_speech_ms: int = 5000,
         min_energy: float = 0.01,
+        onset_threshold: int = 3,
     ):
         self.server_url = f"{server_url}/ws/transcribe/{strategy}"
         self.strategy = strategy
         self.sample_rate = sample_rate
+        self.chunk_ms = chunk_ms
         self.silence_threshold_ms = silence_threshold_ms
         self.max_speech_ms = max_speech_ms
         self.min_energy = min_energy
+        self.onset_threshold = onset_threshold
+        self.silence_chunks = int(silence_threshold_ms / chunk_ms)
 
         self.vad = create_vad()
-        self.audio_capture = AudioCapture(sample_rate=sample_rate, chunk_ms=30)
+        self.audio_capture = AudioCapture(sample_rate=sample_rate, chunk_ms=chunk_ms)
         self.latency_stats = LatencyStats()
 
         self._current_partial = ""
@@ -68,20 +108,21 @@ class StreamingClient:
         """Build vad_end message."""
         return json.dumps({"type": "vad_end"})
 
-    def _display_partial(self, text: str):
-        """Display partial result, overwriting previous."""
-        # Clear previous line and write new
+    def _clear_partial_line(self):
+        """Clear the current partial display line."""
         clear = "\r" + " " * (len(self._current_partial) + 20) + "\r"
         sys.stdout.write(clear)
+
+    def _display_partial(self, text: str):
+        """Display partial result, overwriting previous."""
+        self._clear_partial_line()
         sys.stdout.write(f"[partial] {text}")
         sys.stdout.flush()
         self._current_partial = text
 
     def _display_final(self, text: str, processing_ms: float):
         """Display final result on new line."""
-        # Clear partial line first
-        clear = "\r" + " " * (len(self._current_partial) + 20) + "\r"
-        sys.stdout.write(clear)
+        self._clear_partial_line()
         print(f"[final {processing_ms:.0f}ms] {text}")
         self._current_partial = ""
 
@@ -102,6 +143,30 @@ class StreamingClient:
             if text:
                 self._display_final(text, processing_ms)
 
+    def _detect_speech(self, chunk: np.ndarray) -> tuple[bool, float]:
+        """Detect speech in chunk using VAD and energy. Returns (is_speech, energy)."""
+        chunk_bytes = (chunk * 32768).astype(np.int16).tobytes()
+        vad_speech = self.vad.is_speech(chunk_bytes, self.sample_rate)
+        energy = float(np.sqrt(np.mean(chunk ** 2)))
+        return vad_speech and energy >= self.min_energy, energy
+
+    def _should_finalize(self, state: SpeechState, speech_detected: bool) -> bool:
+        """Determine if we should finalize the current speech segment."""
+        if not state.is_speaking:
+            return False
+
+        # Silence timeout
+        if not speech_detected:
+            state.silence_count += 1
+            if state.silence_count >= self.silence_chunks:
+                return True
+
+        # Max duration reached
+        if state.duration_ms(self.chunk_ms) >= self.max_speech_ms:
+            return True
+
+        return False
+
     async def run(self):
         """Main client loop."""
         print(f"Connecting to {self.server_url}")
@@ -112,82 +177,50 @@ class StreamingClient:
 
         async with websockets.connect(self.server_url, max_size=10 * 1024 * 1024) as ws:
             with self.audio_capture:
-                silence_count = 0
-                silence_chunks = int(self.silence_threshold_ms / 30)
-                is_speaking = False
-                speech_onset_count = 0
-                speech_onset_threshold = 3  # require 3 consecutive speech chunks (~90ms)
+                state = SpeechState()
 
                 async def receive_responses():
-                    """Background task to receive and handle responses."""
                     try:
                         async for response in ws:
                             await self._handle_response(response)
                     except websockets.exceptions.ConnectionClosed:
                         pass
 
-                # Start response handler
                 response_task = asyncio.create_task(receive_responses())
-
                 loop = asyncio.get_event_loop()
-
-                speech_energy_sum = 0.0
-                speech_chunk_count = 0
 
                 try:
                     while True:
-                        # Run blocking queue.get() in thread to not block event loop
                         chunk = await loop.run_in_executor(
                             None, self.audio_capture.get_chunk, 0.1
                         )
                         if chunk is None:
                             continue
 
-                        # VAD + energy detection
-                        chunk_bytes = (chunk * 32768).astype(np.int16).tobytes()
-                        vad_speech = self.vad.is_speech(chunk_bytes, self.sample_rate)
-                        chunk_energy = float(np.sqrt(np.mean(chunk ** 2)))
-                        # Require both VAD and energy to count as speech
-                        speech_detected = vad_speech and chunk_energy >= self.min_energy
+                        speech_detected, energy = self._detect_speech(chunk)
 
+                        # Handle speech onset (debounce)
                         if speech_detected:
-                            silence_count = 0
-                            if not is_speaking:
-                                speech_onset_count += 1
-                                if speech_onset_count >= speech_onset_threshold:
-                                    is_speaking = True
+                            state.silence_count = 0
+                            if not state.is_speaking:
+                                state.onset_count += 1
+                                if state.onset_count >= self.onset_threshold:
+                                    state.start_speaking()
                         else:
-                            speech_onset_count = 0
+                            state.onset_count = 0
 
-                        # Only send audio frames during speech
-                        if is_speaking:
-                            message = self._build_audio_frame(chunk)
-                            await ws.send(message)
-                            speech_energy_sum += chunk_energy
-                            speech_chunk_count += 1
+                        # Send audio during speech
+                        if state.is_speaking:
+                            await ws.send(self._build_audio_frame(chunk))
+                            state.add_chunk(energy)
 
-                        # Check if we should finalize
-                        should_finalize = False
-                        if is_speaking:
-                            speech_duration_ms = speech_chunk_count * 30
-                            if not speech_detected:
-                                silence_count += 1
-                                if silence_count >= silence_chunks:
-                                    should_finalize = True
-                            if speech_duration_ms >= self.max_speech_ms:
-                                should_finalize = True
-
-                        if should_finalize:
-                            avg_energy = speech_energy_sum / max(speech_chunk_count, 1)
-                            if avg_energy >= self.min_energy:
+                        # Check for finalization
+                        if self._should_finalize(state, speech_detected):
+                            if state.avg_energy() >= self.min_energy:
                                 await ws.send(self._build_vad_end())
                             else:
-                                logger.debug(f"[skip] Energy too low ({avg_energy:.4f} < {self.min_energy})")
-                            is_speaking = False
-                            silence_count = 0
-                            speech_onset_count = 0
-                            speech_energy_sum = 0.0
-                            speech_chunk_count = 0
+                                logger.debug(f"[skip] Energy too low ({state.avg_energy():.4f})")
+                            state.reset()
 
                 finally:
                     response_task.cancel()
@@ -200,7 +233,6 @@ class StreamingClient:
 async def main():
     server = os.environ.get("SERVER_URL", "ws://localhost:8765")
     strategy = os.environ.get("STRATEGY", "prompt")
-
     min_energy = float(os.environ.get("MIN_ENERGY", "0.01"))
 
     client = StreamingClient(server_url=server, strategy=strategy, min_energy=min_energy)
