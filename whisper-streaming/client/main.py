@@ -7,7 +7,7 @@ import asyncio
 import logging
 import numpy as np
 import websockets
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,7 @@ class StreamingClient:
         max_speech_ms: int = 5000,
         min_energy: float = 0.01,
         onset_threshold: int = 3,
+        reconnect_interval: float = 5.0,
     ):
         self.server_url = f"{server_url}/ws/transcribe/{strategy}"
         self.strategy = strategy
@@ -88,12 +89,15 @@ class StreamingClient:
         self.min_energy = min_energy
         self.onset_threshold = onset_threshold
         self.silence_chunks = int(silence_threshold_ms / chunk_ms)
+        self.reconnect_interval = reconnect_interval
 
         self.vad = create_vad()
         self.audio_capture = AudioCapture(sample_rate=sample_rate, chunk_ms=chunk_ms)
         self.latency_stats = LatencyStats()
 
         self._current_partial = ""
+        self._ws = None
+        self._connected = False
 
     def _build_audio_frame(self, audio: np.ndarray) -> str:
         """Build audio_frame message."""
@@ -167,67 +171,128 @@ class StreamingClient:
 
         return False
 
+    async def _try_send(self, message: str) -> bool:
+        """Try to send message, return False if not connected."""
+        if not self._connected or self._ws is None:
+            return False
+        try:
+            await self._ws.send(message)
+            return True
+        except websockets.exceptions.ConnectionClosed:
+            self._connected = False
+            print("\n[disconnected] Server connection lost")
+            return False
+
+    async def _connect(self) -> bool:
+        """Try to connect to server. Returns True on success."""
+        try:
+            self._ws = await websockets.connect(
+                self.server_url,
+                max_size=10 * 1024 * 1024,
+                close_timeout=2
+            )
+            self._connected = True
+            print("[connected] Server connected")
+            return True
+        except (OSError, websockets.exceptions.WebSocketException) as e:
+            self._connected = False
+            self._ws = None
+            return False
+
+    async def _receive_loop(self):
+        """Background task to receive responses."""
+        while True:
+            if not self._connected or self._ws is None:
+                await asyncio.sleep(0.1)
+                continue
+            try:
+                response = await self._ws.recv()
+                await self._handle_response(response)
+            except websockets.exceptions.ConnectionClosed:
+                self._connected = False
+                print("\n[disconnected] Server connection lost")
+            except Exception:
+                pass
+
+    async def _reconnect_loop(self):
+        """Background task to reconnect when disconnected."""
+        while True:
+            if not self._connected:
+                if await self._connect():
+                    pass  # Connected
+                else:
+                    await asyncio.sleep(self.reconnect_interval)
+            else:
+                await asyncio.sleep(1)
+
     async def run(self):
         """Main client loop."""
-        print(f"Connecting to {self.server_url}")
+        print(f"Server: {self.server_url}")
         print(f"Strategy: {self.strategy}")
         print(f"VAD: {os.environ.get('VAD_BACKEND', 'webrtc')}")
         print(f"Min energy: {self.min_energy}")
         print("Press Ctrl+C to stop\n")
 
-        async with websockets.connect(self.server_url, max_size=10 * 1024 * 1024) as ws:
-            with self.audio_capture:
-                state = SpeechState()
+        # Try initial connection
+        if not await self._connect():
+            print(f"[offline] Server not available, will retry every {self.reconnect_interval}s")
+            print("[offline] Audio capture active, speech detection running\n")
 
-                async def receive_responses():
-                    try:
-                        async for response in ws:
-                            await self._handle_response(response)
-                    except websockets.exceptions.ConnectionClosed:
-                        pass
+        with self.audio_capture:
+            state = SpeechState()
 
-                response_task = asyncio.create_task(receive_responses())
-                loop = asyncio.get_event_loop()
+            # Start background tasks
+            receive_task = asyncio.create_task(self._receive_loop())
+            reconnect_task = asyncio.create_task(self._reconnect_loop())
+            loop = asyncio.get_event_loop()
 
+            try:
+                while True:
+                    chunk = await loop.run_in_executor(
+                        None, self.audio_capture.get_chunk, 0.1
+                    )
+                    if chunk is None:
+                        continue
+
+                    speech_detected, energy = self._detect_speech(chunk)
+
+                    # Handle speech onset (debounce)
+                    if speech_detected:
+                        state.silence_count = 0
+                        if not state.is_speaking:
+                            state.onset_count += 1
+                            if state.onset_count >= self.onset_threshold:
+                                state.start_speaking()
+                    else:
+                        state.onset_count = 0
+
+                    # Send audio during speech (if connected)
+                    if state.is_speaking:
+                        await self._try_send(self._build_audio_frame(chunk))
+                        state.add_chunk(energy)
+
+                    # Check for finalization
+                    if self._should_finalize(state, speech_detected):
+                        if state.avg_energy() >= self.min_energy:
+                            sent = await self._try_send(self._build_vad_end())
+                            if not sent and state.chunk_count > 0:
+                                duration = state.duration_ms(self.chunk_ms)
+                                print(f"[offline] Speech detected ({duration}ms) - server unavailable")
+                        state.reset()
+
+            finally:
+                receive_task.cancel()
+                reconnect_task.cancel()
                 try:
-                    while True:
-                        chunk = await loop.run_in_executor(
-                            None, self.audio_capture.get_chunk, 0.1
-                        )
-                        if chunk is None:
-                            continue
-
-                        speech_detected, energy = self._detect_speech(chunk)
-
-                        # Handle speech onset (debounce)
-                        if speech_detected:
-                            state.silence_count = 0
-                            if not state.is_speaking:
-                                state.onset_count += 1
-                                if state.onset_count >= self.onset_threshold:
-                                    state.start_speaking()
-                        else:
-                            state.onset_count = 0
-
-                        # Send audio during speech
-                        if state.is_speaking:
-                            await ws.send(self._build_audio_frame(chunk))
-                            state.add_chunk(energy)
-
-                        # Check for finalization
-                        if self._should_finalize(state, speech_detected):
-                            if state.avg_energy() >= self.min_energy:
-                                await ws.send(self._build_vad_end())
-                            else:
-                                logger.debug(f"[skip] Energy too low ({state.avg_energy():.4f})")
-                            state.reset()
-
-                finally:
-                    response_task.cancel()
-                    try:
-                        await response_task
-                    except asyncio.CancelledError:
-                        pass
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+                try:
+                    await reconnect_task
+                except asyncio.CancelledError:
+                    pass
+                if self._ws:
+                    await self._ws.close()
 
 
 async def main():
