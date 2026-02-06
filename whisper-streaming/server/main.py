@@ -30,8 +30,8 @@ def is_hallucination(text: str) -> bool:
     if re.search(r'(.)\1{5,}', text):
         return True
 
-    # Repeated short patterns (like "लिलि" repeated)
-    if re.search(r'(.{1,4})\1{4,}', text):
+    # Repeated short patterns (like "लिलि" or "chool" repeated)
+    if re.search(r'(.{2,8})\1{4,}', text):
         return True
 
     # Repeated words (like "funny, funny, funny" or "registration registration...")
