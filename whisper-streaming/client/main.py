@@ -4,12 +4,9 @@ import sys
 import json
 import base64
 import asyncio
-import logging
 import numpy as np
 import websockets
-from dataclasses import dataclass
-
-logger = logging.getLogger(__name__)
+from dataclasses import dataclass, field
 
 from .audio import AudioCapture
 from .vad import create_vad
@@ -38,40 +35,39 @@ class SpeechState:
     is_speaking: bool = False
     silence_count: int = 0
     onset_count: int = 0
-    energy_sum: float = 0.0
-    chunk_count: int = 0
+    audio_chunks: list = field(default_factory=list)
 
     def reset(self):
         """Reset all state after finalization."""
         self.is_speaking = False
         self.silence_count = 0
         self.onset_count = 0
-        self.energy_sum = 0.0
-        self.chunk_count = 0
+        self.audio_chunks = []
 
     def start_speaking(self):
         """Transition to speaking state."""
         self.is_speaking = True
 
-    def add_chunk(self, energy: float):
-        """Record a speech chunk."""
-        self.energy_sum += energy
-        self.chunk_count += 1
+    def add_chunk(self, chunk: np.ndarray):
+        """Add audio chunk to buffer."""
+        self.audio_chunks.append(chunk)
 
-    def avg_energy(self) -> float:
-        """Get average energy of speech chunks."""
-        return self.energy_sum / max(self.chunk_count, 1)
+    def get_audio(self) -> np.ndarray:
+        """Get concatenated audio."""
+        if not self.audio_chunks:
+            return np.array([], dtype=np.float32)
+        return np.concatenate(self.audio_chunks)
 
-    def duration_ms(self, chunk_ms: int = 30) -> int:
+    def duration_ms(self, sample_rate: int) -> float:
         """Get speech duration in milliseconds."""
-        return self.chunk_count * chunk_ms
+        total_samples = sum(len(c) for c in self.audio_chunks)
+        return total_samples / sample_rate * 1000
 
 
-class StreamingClient:
+class BatchClient:
     def __init__(
         self,
         server_url: str,
-        strategy: str = "prompt",
         sample_rate: int = 16000,
         chunk_ms: int = 30,
         silence_threshold_ms: int = 300,
@@ -80,8 +76,7 @@ class StreamingClient:
         onset_threshold: int = 3,
         reconnect_interval: float = 5.0,
     ):
-        self.server_url = f"{server_url}/ws/transcribe/{strategy}"
-        self.strategy = strategy
+        self.server_url = f"{server_url}/ws/transcribe"
         self.sample_rate = sample_rate
         self.chunk_ms = chunk_ms
         self.silence_threshold_ms = silence_threshold_ms
@@ -95,57 +90,17 @@ class StreamingClient:
         self.audio_capture = AudioCapture(sample_rate=sample_rate, chunk_ms=chunk_ms)
         self.latency_stats = LatencyStats()
 
-        self._current_partial = ""
         self._ws = None
         self._connected = False
 
-    def _build_audio_frame(self, audio: np.ndarray) -> str:
-        """Build audio_frame message."""
+    def _build_transcribe_message(self, audio: np.ndarray) -> str:
+        """Build transcribe message with audio batch."""
         audio_b64 = base64.b64encode(audio.astype(np.float32).tobytes()).decode()
         return json.dumps({
-            "type": "audio_frame",
+            "type": "transcribe",
             "audio": audio_b64,
             "sample_rate": self.sample_rate
         })
-
-    def _build_vad_end(self) -> str:
-        """Build vad_end message."""
-        return json.dumps({"type": "vad_end"})
-
-    def _clear_partial_line(self):
-        """Clear the current partial display line."""
-        clear = "\r" + " " * (len(self._current_partial) + 20) + "\r"
-        sys.stdout.write(clear)
-
-    def _display_partial(self, text: str):
-        """Display partial result, overwriting previous."""
-        self._clear_partial_line()
-        sys.stdout.write(f"[partial] {text}")
-        sys.stdout.flush()
-        self._current_partial = text
-
-    def _display_final(self, text: str, processing_ms: float):
-        """Display final result on new line."""
-        self._clear_partial_line()
-        print(f"[final {processing_ms:.0f}ms] {text}")
-        self._current_partial = ""
-
-    async def _handle_response(self, response: str):
-        """Handle server response (partial or final)."""
-        data = json.loads(response)
-        msg_type = data.get("type")
-
-        if msg_type == "partial":
-            text = data.get("text", "").strip()
-            if text:
-                self._display_partial(text)
-
-        elif msg_type == "final":
-            text = data.get("text", "").strip()
-            processing_ms = data.get("processing_time_ms", 0)
-            self.latency_stats.record(processing_ms)
-            if text:
-                self._display_final(text, processing_ms)
 
     def _detect_speech(self, chunk: np.ndarray) -> tuple[bool, float]:
         """Detect speech in chunk using VAD and energy. Returns (is_speech, energy)."""
@@ -166,22 +121,10 @@ class StreamingClient:
                 return True
 
         # Max duration reached
-        if state.duration_ms(self.chunk_ms) >= self.max_speech_ms:
+        if state.duration_ms(self.sample_rate) >= self.max_speech_ms:
             return True
 
         return False
-
-    async def _try_send(self, message: str) -> bool:
-        """Try to send message, return False if not connected."""
-        if not self._connected or self._ws is None:
-            return False
-        try:
-            await self._ws.send(message)
-            return True
-        except websockets.exceptions.ConnectionClosed:
-            self._connected = False
-            print("\n[disconnected] Server connection lost")
-            return False
 
     async def _connect(self) -> bool:
         """Try to connect to server. Returns True on success."""
@@ -194,33 +137,32 @@ class StreamingClient:
             self._connected = True
             print("[connected] Server connected")
             return True
-        except (OSError, websockets.exceptions.WebSocketException) as e:
+        except (OSError, websockets.exceptions.WebSocketException):
             self._connected = False
             self._ws = None
             return False
 
-    async def _receive_loop(self):
-        """Background task to receive responses."""
-        while True:
-            if not self._connected or self._ws is None:
-                await asyncio.sleep(0.1)
-                continue
-            try:
-                response = await self._ws.recv()
-                await self._handle_response(response)
-            except websockets.exceptions.ConnectionClosed:
-                self._connected = False
-                print("\n[disconnected] Server connection lost")
-            except Exception:
-                pass
+    async def _send_and_receive(self, audio: np.ndarray) -> dict | None:
+        """Send audio batch and receive result."""
+        if not self._connected or self._ws is None:
+            return None
+
+        try:
+            message = self._build_transcribe_message(audio)
+            await self._ws.send(message)
+            response = await self._ws.recv()
+            return json.loads(response)
+        except websockets.exceptions.ConnectionClosed:
+            self._connected = False
+            print("\n[disconnected] Server connection lost")
+            return None
 
     async def _reconnect_loop(self):
         """Background task to reconnect when disconnected."""
         while True:
             if not self._connected:
-                if await self._connect():
-                    pass  # Connected
-                else:
+                await self._connect()
+                if not self._connected:
                     await asyncio.sleep(self.reconnect_interval)
             else:
                 await asyncio.sleep(1)
@@ -228,7 +170,6 @@ class StreamingClient:
     async def run(self):
         """Main client loop."""
         print(f"Server: {self.server_url}")
-        print(f"Strategy: {self.strategy}")
         print(f"VAD: {os.environ.get('VAD_BACKEND', 'webrtc')}")
         print(f"Min energy: {self.min_energy}")
         print("Press Ctrl+C to stop\n")
@@ -241,8 +182,7 @@ class StreamingClient:
         with self.audio_capture:
             state = SpeechState()
 
-            # Start background tasks
-            receive_task = asyncio.create_task(self._receive_loop())
+            # Start background reconnect
             reconnect_task = asyncio.create_task(self._reconnect_loop())
             loop = asyncio.get_event_loop()
 
@@ -266,27 +206,30 @@ class StreamingClient:
                     else:
                         state.onset_count = 0
 
-                    # Send audio during speech (if connected)
+                    # Collect audio during speech
                     if state.is_speaking:
-                        await self._try_send(self._build_audio_frame(chunk))
-                        state.add_chunk(energy)
+                        state.add_chunk(chunk)
 
                     # Check for finalization
                     if self._should_finalize(state, speech_detected):
-                        if state.avg_energy() >= self.min_energy:
-                            sent = await self._try_send(self._build_vad_end())
-                            if not sent and state.chunk_count > 0:
-                                duration = state.duration_ms(self.chunk_ms)
-                                print(f"[offline] Speech detected ({duration}ms) - server unavailable")
+                        audio = state.get_audio()
+                        duration_ms = state.duration_ms(self.sample_rate)
+
+                        if self._connected:
+                            result = await self._send_and_receive(audio)
+                            if result:
+                                text = result.get("text", "").strip()
+                                ms = result.get("processing_time_ms", 0)
+                                self.latency_stats.record(ms)
+                                if text:
+                                    print(f"[{ms:.0f}ms] {text}")
+                        else:
+                            print(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
+
                         state.reset()
 
             finally:
-                receive_task.cancel()
                 reconnect_task.cancel()
-                try:
-                    await receive_task
-                except asyncio.CancelledError:
-                    pass
                 try:
                     await reconnect_task
                 except asyncio.CancelledError:
@@ -297,10 +240,9 @@ class StreamingClient:
 
 async def main():
     server = os.environ.get("SERVER_URL", "ws://localhost:8765")
-    strategy = os.environ.get("STRATEGY", "prompt")
     min_energy = float(os.environ.get("MIN_ENERGY", "0.01"))
 
-    client = StreamingClient(server_url=server, strategy=strategy, min_energy=min_energy)
+    client = BatchClient(server_url=server, min_energy=min_energy)
     try:
         await client.run()
     except KeyboardInterrupt:

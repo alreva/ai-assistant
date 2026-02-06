@@ -12,13 +12,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use webrtc_vad::Vad;
 
 #[derive(Parser, Debug)]
-#[command(name = "whisper-client", about = "Streaming speech-to-text client")]
+#[command(name = "whisper-client", about = "Batch speech-to-text client")]
 struct Args {
     #[arg(long, env = "SERVER_URL", default_value = "ws://localhost:8765")]
     server_url: String,
-
-    #[arg(long, env = "STRATEGY", default_value = "prompt")]
-    strategy: String,
 
     #[arg(long, env = "MIN_ENERGY", default_value = "0.01")]
     min_energy: f32,
@@ -41,8 +38,7 @@ struct SpeechState {
     is_speaking: bool,
     silence_count: u32,
     onset_count: u32,
-    energy_sum: f32,
-    chunk_count: u32,
+    audio_chunks: Vec<Vec<f32>>,
 }
 
 impl SpeechState {
@@ -50,44 +46,33 @@ impl SpeechState {
         self.is_speaking = false;
         self.silence_count = 0;
         self.onset_count = 0;
-        self.energy_sum = 0.0;
-        self.chunk_count = 0;
+        self.audio_chunks.clear();
     }
 
     fn start_speaking(&mut self) {
         self.is_speaking = true;
     }
 
-    fn add_chunk(&mut self, energy: f32) {
-        self.energy_sum += energy;
-        self.chunk_count += 1;
+    fn add_chunk(&mut self, chunk: Vec<f32>) {
+        self.audio_chunks.push(chunk);
     }
 
-    fn avg_energy(&self) -> f32 {
-        if self.chunk_count == 0 {
-            0.0
-        } else {
-            self.energy_sum / self.chunk_count as f32
-        }
+    fn get_audio(&self) -> Vec<f32> {
+        self.audio_chunks.iter().flatten().copied().collect()
     }
 
-    fn duration_ms(&self, chunk_ms: u32) -> u32 {
-        self.chunk_count * chunk_ms
+    fn duration_ms(&self, sample_rate: u32) -> u32 {
+        let total_samples: usize = self.audio_chunks.iter().map(|c| c.len()).sum();
+        (total_samples as u32 * 1000) / sample_rate
     }
 }
 
 #[derive(Serialize)]
-struct AudioFrame {
+struct TranscribeMessage {
     #[serde(rename = "type")]
     msg_type: &'static str,
     audio: String,
     sample_rate: u32,
-}
-
-#[derive(Serialize)]
-struct VadEnd {
-    #[serde(rename = "type")]
-    msg_type: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -137,26 +122,18 @@ fn f32_to_i16(samples: &[f32]) -> Vec<i16> {
         .collect()
 }
 
-fn build_audio_frame(audio: &[f32], sample_rate: u32) -> String {
+fn build_transcribe_message(audio: &[f32], sample_rate: u32) -> String {
     let bytes: Vec<u8> = audio
         .iter()
         .flat_map(|&s| s.to_le_bytes())
         .collect();
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    serde_json::to_string(&AudioFrame {
-        msg_type: "audio_frame",
+    serde_json::to_string(&TranscribeMessage {
+        msg_type: "transcribe",
         audio: b64,
         sample_rate,
     })
     .unwrap()
-}
-
-fn build_vad_end() -> String {
-    serde_json::to_string(&VadEnd { msg_type: "vad_end" }).unwrap()
-}
-
-fn clear_line(len: usize) {
-    print!("\r{}\r", " ".repeat(len + 20));
 }
 
 fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
@@ -185,13 +162,11 @@ fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let ws_url = format!("{}/ws/transcribe/{}", args.server_url, args.strategy);
+    let ws_url = format!("{}/ws/transcribe", args.server_url);
     let chunk_ms: u32 = 30;
-    let _chunk_size = (args.sample_rate * chunk_ms / 1000) as usize;
     let silence_chunks = args.silence_threshold_ms / chunk_ms;
 
     println!("Server: {}", ws_url);
-    println!("Strategy: {}", args.strategy);
     println!("Min energy: {}", args.min_energy);
     println!("Press Ctrl+C to stop\n");
 
@@ -204,7 +179,6 @@ async fn main() -> Result<()> {
         .default_input_device()
         .context("No input device available")?;
 
-    // Use device's default config, we'll handle sample rate conversion if needed
     let default_config = device.default_input_config()?;
     let device_sample_rate = default_config.sample_rate().0;
 
@@ -214,7 +188,6 @@ async fn main() -> Result<()> {
         buffer_size: cpal::BufferSize::Default,
     };
 
-    // Calculate chunk size at device sample rate, then we'll resample
     let device_chunk_size = (device_sample_rate * chunk_ms / 1000) as usize;
     println!("Device sample rate: {}Hz (target: {}Hz)", device_sample_rate, args.sample_rate);
 
@@ -241,21 +214,8 @@ async fn main() -> Result<()> {
     );
 
     // Connection state
-    let mut ws_stream: Option<
-        futures_util::stream::SplitSink<
-            tokio_tungstenite::WebSocketStream<
-                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-            >,
-            Message,
-        >,
-    > = None;
-    let mut ws_read: Option<
-        futures_util::stream::SplitStream<
-            tokio_tungstenite::WebSocketStream<
-                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-            >,
-        >,
-    > = None;
+    let mut ws_stream: Option<_> = None;
+    let mut ws_read: Option<_> = None;
 
     // Try initial connection
     match connect_async(&ws_url).await {
@@ -273,7 +233,6 @@ async fn main() -> Result<()> {
 
     let mut state = SpeechState::default();
     let mut stats = LatencyStats::new();
-    let mut current_partial = String::new();
     let mut reconnect_timer = tokio::time::interval(Duration::from_secs(5));
     let mut audio_buffer: Vec<f32> = Vec::with_capacity(device_chunk_size * 2);
 
@@ -296,46 +255,6 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // Handle server responses
-            msg = async {
-                if let Some(ref mut read) = ws_read {
-                    read.next().await
-                } else {
-                    std::future::pending().await
-                }
-            } => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        if let Ok(resp) = serde_json::from_str::<ServerResponse>(&text) {
-                            let text_content = resp.text.unwrap_or_default().trim().to_string();
-                            if resp.msg_type == "partial" && !text_content.is_empty() {
-                                clear_line(current_partial.len());
-                                print!("[partial] {}", text_content);
-                                use std::io::Write;
-                                std::io::stdout().flush().ok();
-                                current_partial = text_content;
-                            } else if resp.msg_type == "final" {
-                                let ms = resp.processing_time_ms.unwrap_or(0.0);
-                                stats.record(ms);
-                                if !text_content.is_empty() {
-                                    clear_line(current_partial.len());
-                                    println!("[final {:.0}ms] {}", ms, text_content);
-                                    current_partial.clear();
-                                }
-                            }
-                        }
-                    }
-                    Some(Err(_)) | None => {
-                        if ws_stream.is_some() {
-                            println!("\n[disconnected] Server connection lost");
-                            ws_stream = None;
-                            ws_read = None;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
             // Handle audio from device
             Some(samples) = audio_rx.recv() => {
                 audio_buffer.extend_from_slice(&samples);
@@ -344,7 +263,7 @@ async fn main() -> Result<()> {
                 while audio_buffer.len() >= device_chunk_size {
                     let device_chunk: Vec<f32> = audio_buffer.drain(..device_chunk_size).collect();
 
-                    // Resample to target rate for VAD and server
+                    // Resample to target rate for VAD
                     let chunk = resample(&device_chunk, device_sample_rate, args.sample_rate);
 
                     // VAD + energy detection
@@ -366,17 +285,9 @@ async fn main() -> Result<()> {
                         state.onset_count = 0;
                     }
 
-                    // Send audio during speech
+                    // Collect audio during speech
                     if state.is_speaking {
-                        if let Some(ref mut ws) = ws_stream {
-                            let msg = build_audio_frame(&chunk, args.sample_rate);
-                            if ws.send(Message::Text(msg)).await.is_err() {
-                                println!("\n[disconnected] Server connection lost");
-                                ws_stream = None;
-                                ws_read = None;
-                            }
-                        }
-                        state.add_chunk(energy);
+                        state.add_chunk(chunk);
                     }
 
                     // Check for finalization
@@ -388,24 +299,40 @@ async fn main() -> Result<()> {
                                 should_finalize = true;
                             }
                         }
-                        if state.duration_ms(chunk_ms) >= args.max_speech_ms {
+                        if state.duration_ms(args.sample_rate) >= args.max_speech_ms {
                             should_finalize = true;
                         }
                     }
 
                     if should_finalize {
-                        if state.avg_energy() >= args.min_energy {
-                            if let Some(ref mut ws) = ws_stream {
-                                let msg = build_vad_end();
-                                if ws.send(Message::Text(msg)).await.is_err() {
-                                    ws_stream = None;
-                                    ws_read = None;
+                        let audio = state.get_audio();
+                        let duration_ms = state.duration_ms(args.sample_rate);
+
+                        if let Some(ref mut ws) = ws_stream {
+                            let msg = build_transcribe_message(&audio, args.sample_rate);
+                            if ws.send(Message::Text(msg)).await.is_ok() {
+                                // Wait for response
+                                if let Some(ref mut read) = ws_read {
+                                    if let Some(Ok(Message::Text(text))) = read.next().await {
+                                        if let Ok(resp) = serde_json::from_str::<ServerResponse>(&text) {
+                                            let text_content = resp.text.unwrap_or_default().trim().to_string();
+                                            let ms = resp.processing_time_ms.unwrap_or(0.0);
+                                            stats.record(ms);
+                                            if !text_content.is_empty() {
+                                                println!("[{:.0}ms] {}", ms, text_content);
+                                            }
+                                        }
+                                    }
                                 }
-                            } else if state.chunk_count > 0 {
-                                let duration = state.duration_ms(chunk_ms);
-                                println!("[offline] Speech detected ({}ms) - server unavailable", duration);
+                            } else {
+                                println!("\n[disconnected] Server connection lost");
+                                ws_stream = None;
+                                ws_read = None;
                             }
+                        } else {
+                            println!("[offline] Speech detected ({}ms) - server unavailable", duration_ms);
                         }
+
                         state.reset();
                     }
                 }
