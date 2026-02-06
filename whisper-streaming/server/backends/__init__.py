@@ -12,6 +12,9 @@ def create_backend() -> WhisperBackend:
     elif backend_type == "faster":
         from .faster_backend import FasterBackend
         return FasterBackend()
+    elif backend_type == "hailo":
+        from .hailo_backend import HailoBackend
+        return HailoBackend()
     else:
         raise ValueError(f"Unknown backend: {backend_type}")
 
