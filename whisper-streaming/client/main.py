@@ -36,6 +36,8 @@ class SpeechState:
     silence_count: int = 0
     onset_count: int = 0
     audio_chunks: list = field(default_factory=list)
+    energy_sum: float = 0.0
+    energy_count: int = 0
 
     def reset(self):
         """Reset all state after finalization."""
@@ -43,20 +45,28 @@ class SpeechState:
         self.silence_count = 0
         self.onset_count = 0
         self.audio_chunks = []
+        self.energy_sum = 0.0
+        self.energy_count = 0
 
     def start_speaking(self):
         """Transition to speaking state."""
         self.is_speaking = True
 
-    def add_chunk(self, chunk: np.ndarray):
+    def add_chunk(self, chunk: np.ndarray, energy: float):
         """Add audio chunk to buffer."""
         self.audio_chunks.append(chunk)
+        self.energy_sum += energy
+        self.energy_count += 1
 
     def get_audio(self) -> np.ndarray:
         """Get concatenated audio."""
         if not self.audio_chunks:
             return np.array([], dtype=np.float32)
         return np.concatenate(self.audio_chunks)
+
+    def avg_energy(self) -> float:
+        """Get average energy of speech chunks."""
+        return self.energy_sum / max(self.energy_count, 1)
 
     def duration_ms(self, sample_rate: int) -> float:
         """Get speech duration in milliseconds."""
@@ -75,6 +85,7 @@ class BatchClient:
         min_energy: float = 0.01,
         onset_threshold: int = 3,
         reconnect_interval: float = 5.0,
+        min_speech_ms: int = 200,
     ):
         self.server_url = f"{server_url}/ws/transcribe"
         self.sample_rate = sample_rate
@@ -85,6 +96,7 @@ class BatchClient:
         self.onset_threshold = onset_threshold
         self.silence_chunks = int(silence_threshold_ms / chunk_ms)
         self.reconnect_interval = reconnect_interval
+        self.min_speech_ms = min_speech_ms
 
         self.vad = create_vad()
         self.audio_capture = AudioCapture(sample_rate=sample_rate, chunk_ms=chunk_ms)
@@ -208,12 +220,18 @@ class BatchClient:
 
                     # Collect audio during speech
                     if state.is_speaking:
-                        state.add_chunk(chunk)
+                        state.add_chunk(chunk, energy)
 
                     # Check for finalization
                     if self._should_finalize(state, speech_detected):
                         audio = state.get_audio()
                         duration_ms = state.duration_ms(self.sample_rate)
+                        avg_energy = state.avg_energy()
+
+                        # Skip if too short or too quiet (likely noise)
+                        if duration_ms < self.min_speech_ms or avg_energy < self.min_energy:
+                            state.reset()
+                            continue
 
                         if self._connected:
                             result = await self._send_and_receive(audio)

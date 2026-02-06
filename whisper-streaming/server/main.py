@@ -9,6 +9,8 @@ from websockets.asyncio.server import serve
 
 from .backends import create_backend
 
+import re
+
 # Configure logging
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -16,6 +18,27 @@ logging.basicConfig(
     datefmt="%H:%M:%S"
 )
 logger = logging.getLogger(__name__)
+
+
+def is_hallucination(text: str) -> bool:
+    """Detect common Whisper hallucinations."""
+    if not text or len(text.strip()) < 2:
+        return True
+
+    # Repeated character patterns (like లిలిలిలి or ༼ ༼ ༼)
+    if re.search(r'(.)\1{5,}', text):
+        return True
+
+    # Repeated short patterns (like "लिलि" repeated)
+    if re.search(r'(.{1,4})\1{4,}', text):
+        return True
+
+    # Very high ratio of non-ASCII to ASCII (likely wrong language detection)
+    ascii_chars = sum(1 for c in text if ord(c) < 128)
+    if len(text) > 10 and ascii_chars / len(text) < 0.1:
+        return True
+
+    return False
 
 
 class TranscriptionSession:
@@ -34,12 +57,20 @@ class TranscriptionSession:
             initial_prompt=self.previous_transcript or None
         )
 
-        # Update prompt for next transcription
-        self.previous_transcript = result.text
+        text = result.text.strip()
+
+        # Filter hallucinations
+        if is_hallucination(text):
+            logger.debug(f"Filtered hallucination: {text[:50]}...")
+            text = ""
+
+        # Only update prompt with valid transcriptions
+        if text:
+            self.previous_transcript = text
 
         return {
             "type": "result",
-            "text": result.text,
+            "text": text,
             "segments": [{"start": s.start, "end": s.end, "text": s.text} for s in result.segments],
             "language": result.language,
             "processing_time_ms": result.processing_time_ms
