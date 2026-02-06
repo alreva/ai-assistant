@@ -34,14 +34,14 @@ def is_hallucination(text: str) -> bool:
     if re.search(r'(.{1,4})\1{4,}', text):
         return True
 
-    # Repeated words (like "funny, funny, funny" 10+ times)
+    # Repeated words (like "funny, funny, funny" or "registration registration...")
     words = re.findall(r'\b\w+\b', text.lower())
-    if len(words) >= 10:
+    if len(words) >= 5:
         from collections import Counter
         word_counts = Counter(words)
         most_common_word, most_common_count = word_counts.most_common(1)[0]
-        # If one word makes up more than 50% of all words and appears 10+ times
-        if most_common_count >= 10 and most_common_count / len(words) > 0.5:
+        # If one word makes up more than 50% of all words and appears 5+ times
+        if most_common_count >= 5 and most_common_count / len(words) > 0.5:
             return True
 
     # Repeated phrases: split into sentences and check for duplicates
