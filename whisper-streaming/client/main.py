@@ -30,6 +30,50 @@ class LatencyStats:
         return f"Transcriptions: {n} | Avg server time: {avg_srv:.0f}ms"
 
 
+class UtteranceAccumulator:
+    """Accumulates transcriptions into complete utterances for LLM."""
+
+    def __init__(self, utterance_silence_ms: int = 5000):
+        self.utterance_silence_ms = utterance_silence_ms
+        self.transcriptions: list[str] = []
+        self.last_transcription_time: float = 0
+
+    def add(self, text: str) -> str | None:
+        """Add transcription. Returns complete utterance if silence threshold reached."""
+        now = time.perf_counter()
+
+        # Check if we should emit previous utterance first
+        utterance = None
+        if self.transcriptions and self.last_transcription_time > 0:
+            elapsed_ms = (now - self.last_transcription_time) * 1000
+            if elapsed_ms >= self.utterance_silence_ms:
+                utterance = self._emit()
+
+        # Add new transcription
+        if text:
+            self.transcriptions.append(text)
+            self.last_transcription_time = now
+
+        return utterance
+
+    def check_timeout(self) -> str | None:
+        """Check if utterance should be emitted due to silence. Call periodically."""
+        if not self.transcriptions or self.last_transcription_time == 0:
+            return None
+
+        elapsed_ms = (time.perf_counter() - self.last_transcription_time) * 1000
+        if elapsed_ms >= self.utterance_silence_ms:
+            return self._emit()
+        return None
+
+    def _emit(self) -> str:
+        """Emit accumulated utterance and reset."""
+        utterance = " ".join(self.transcriptions)
+        self.transcriptions = []
+        self.last_transcription_time = 0
+        return utterance
+
+
 @dataclass
 class SpeechState:
     """Tracks speech detection state."""
@@ -90,6 +134,7 @@ class BatchClient:
         onset_threshold: int = 3,
         reconnect_interval: float = 5.0,
         min_speech_ms: int = 200,
+        utterance_silence_ms: int = 5000,
     ):
         self.server_url = f"{server_url}/ws/transcribe"
         self.sample_rate = sample_rate
@@ -101,10 +146,12 @@ class BatchClient:
         self.silence_chunks = int(silence_threshold_ms / chunk_ms)
         self.reconnect_interval = reconnect_interval
         self.min_speech_ms = min_speech_ms
+        self.utterance_silence_ms = utterance_silence_ms
 
         self.vad = create_vad()
         self.audio_capture = AudioCapture(sample_rate=sample_rate, chunk_ms=chunk_ms)
         self.latency_stats = LatencyStats()
+        self.accumulator = UtteranceAccumulator(utterance_silence_ms=utterance_silence_ms)
 
         self._ws = None
         self._connected = False
@@ -185,11 +232,20 @@ class BatchClient:
             else:
                 await asyncio.sleep(1)
 
+    async def _utterance_check_loop(self):
+        """Background task to check for utterance timeout."""
+        while True:
+            await asyncio.sleep(0.5)
+            utterance = self.accumulator.check_timeout()
+            if utterance:
+                print(f"\n[utterance] {utterance}\n")
+
     async def run(self):
         """Main client loop."""
         print(f"Server: {self.server_url}")
         print(f"VAD: {os.environ.get('VAD_BACKEND', 'webrtc')}")
         print(f"Min energy: {self.min_energy}")
+        print(f"Silence: {self.silence_threshold_ms}ms | Utterance: {self.utterance_silence_ms}ms")
         print("Press Ctrl+C to stop\n")
 
         # Try initial connection
@@ -200,8 +256,9 @@ class BatchClient:
         with self.audio_capture:
             state = SpeechState()
 
-            # Start background reconnect
+            # Start background tasks
             reconnect_task = asyncio.create_task(self._reconnect_loop())
+            utterance_task = asyncio.create_task(self._utterance_check_loop())
             loop = asyncio.get_event_loop()
 
             try:
@@ -251,6 +308,10 @@ class BatchClient:
                                     self.latency_stats.record(total_ms)
                                     if text:
                                         print(f"[e2e:{total_ms:.0f}ms rtt:{rtt_ms:.0f}ms] {text}")
+                                        # Add to utterance accumulator
+                                        prev_utterance = self.accumulator.add(text)
+                                        if prev_utterance:
+                                            print(f"\n[utterance] {prev_utterance}\n")
                         else:
                             print(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
 
@@ -258,8 +319,13 @@ class BatchClient:
 
             finally:
                 reconnect_task.cancel()
+                utterance_task.cancel()
                 try:
                     await reconnect_task
+                except asyncio.CancelledError:
+                    pass
+                try:
+                    await utterance_task
                 except asyncio.CancelledError:
                     pass
                 if self._ws:
@@ -270,8 +336,14 @@ async def main():
     server = os.environ.get("SERVER_URL", "ws://localhost:8765")
     min_energy = float(os.environ.get("MIN_ENERGY", "0.01"))
     silence_ms = int(os.environ.get("SILENCE_MS", "1000"))
+    utterance_ms = int(os.environ.get("UTTERANCE_MS", "5000"))
 
-    client = BatchClient(server_url=server, min_energy=min_energy, silence_threshold_ms=silence_ms)
+    client = BatchClient(
+        server_url=server,
+        min_energy=min_energy,
+        silence_threshold_ms=silence_ms,
+        utterance_silence_ms=utterance_ms
+    )
     try:
         await client.run()
     except KeyboardInterrupt:
