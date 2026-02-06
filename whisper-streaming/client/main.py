@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import time
 import base64
 import asyncio
 import numpy as np
@@ -154,20 +155,22 @@ class BatchClient:
             self._ws = None
             return False
 
-    async def _send_and_receive(self, audio: np.ndarray) -> dict | None:
-        """Send audio batch and receive result."""
+    async def _send_and_receive(self, audio: np.ndarray) -> tuple[dict | None, float]:
+        """Send audio batch and receive result. Returns (result, e2e_ms)."""
         if not self._connected or self._ws is None:
-            return None
+            return None, 0
 
         try:
+            start = time.perf_counter()
             message = self._build_transcribe_message(audio)
             await self._ws.send(message)
             response = await self._ws.recv()
-            return json.loads(response)
+            e2e_ms = (time.perf_counter() - start) * 1000
+            return json.loads(response), e2e_ms
         except websockets.exceptions.ConnectionClosed:
             self._connected = False
             print("\n[disconnected] Server connection lost")
-            return None
+            return None, 0
 
     async def _reconnect_loop(self):
         """Background task to reconnect when disconnected."""
@@ -234,13 +237,12 @@ class BatchClient:
                             continue
 
                         if self._connected:
-                            result = await self._send_and_receive(audio)
+                            result, e2e_ms = await self._send_and_receive(audio)
                             if result:
                                 text = result.get("text", "").strip()
-                                ms = result.get("processing_time_ms", 0)
-                                self.latency_stats.record(ms)
+                                self.latency_stats.record(e2e_ms)
                                 if text:
-                                    print(f"[{ms:.0f}ms] {text}")
+                                    print(f"[{e2e_ms:.0f}ms] {text}")
                         else:
                             print(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
 
