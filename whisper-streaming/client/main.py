@@ -39,6 +39,7 @@ class SpeechState:
     audio_chunks: list = field(default_factory=list)
     energy_sum: float = 0.0
     energy_count: int = 0
+    speech_start_time: float = 0.0
 
     def reset(self):
         """Reset all state after finalization."""
@@ -48,10 +49,12 @@ class SpeechState:
         self.audio_chunks = []
         self.energy_sum = 0.0
         self.energy_count = 0
+        self.speech_start_time = 0.0
 
     def start_speaking(self):
         """Transition to speaking state."""
         self.is_speaking = True
+        self.speech_start_time = time.perf_counter()
 
     def add_chunk(self, chunk: np.ndarray, energy: float):
         """Add audio chunk to buffer."""
@@ -237,12 +240,13 @@ class BatchClient:
                             continue
 
                         if self._connected:
-                            result, e2e_ms = await self._send_and_receive(audio)
+                            result, rtt_ms = await self._send_and_receive(audio)
                             if result:
                                 text = result.get("text", "").strip()
-                                self.latency_stats.record(e2e_ms)
+                                total_ms = (time.perf_counter() - state.speech_start_time) * 1000
+                                self.latency_stats.record(total_ms)
                                 if text:
-                                    print(f"[{e2e_ms:.0f}ms] {text}")
+                                    print(f"[e2e:{total_ms:.0f}ms rtt:{rtt_ms:.0f}ms] {text}")
                         else:
                             print(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
 
