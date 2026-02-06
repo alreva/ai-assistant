@@ -244,7 +244,8 @@ class BatchClient:
                             if result:
                                 total_ms = (time.perf_counter() - state.speech_start_time) * 1000
                                 if result.get("type") == "noise":
-                                    print(f"[noise]")
+                                    sample = result.get("sample", "")
+                                    print(f"[noise] {sample}")
                                 else:
                                     text = result.get("text", "").strip()
                                     self.latency_stats.record(total_ms)

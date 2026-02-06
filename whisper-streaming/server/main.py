@@ -80,10 +80,11 @@ class TranscriptionSession:
 
         text = result.text.strip()
 
-        # Filter hallucinations - return noise response
+        # Filter hallucinations - return noise response with sample
         if is_hallucination(text):
             logger.debug(f"Filtered hallucination: {text[:50]}...")
-            return {"type": "noise"}
+            sample = text[:50] + "..." if len(text) > 50 else text
+            return {"type": "noise", "sample": sample}
 
         # Only update prompt with valid transcriptions
         self.previous_transcript = text

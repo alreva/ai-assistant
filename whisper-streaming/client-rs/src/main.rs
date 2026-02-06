@@ -119,6 +119,7 @@ struct ServerResponse {
     #[serde(rename = "type")]
     msg_type: String,
     text: Option<String>,
+    sample: Option<String>,
 }
 
 struct LatencyStats {
@@ -366,7 +367,8 @@ async fn main() -> Result<()> {
 
                                         if let Ok(resp) = serde_json::from_str::<ServerResponse>(&text) {
                                             if resp.msg_type == "noise" {
-                                                println!("[noise]");
+                                                let sample = resp.sample.unwrap_or_default();
+                                                println!("[noise] {}", sample);
                                             } else {
                                                 let text_content = resp.text.unwrap_or_default().trim().to_string();
                                                 stats.record(e2e_ms);
