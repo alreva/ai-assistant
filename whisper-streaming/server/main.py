@@ -1,15 +1,16 @@
 # server/main.py
 import os
+import re
 import json
 import base64
+import signal
 import asyncio
 import logging
 import numpy as np
 from websockets.asyncio.server import serve
+from websockets.exceptions import ConnectionClosed
 
 from .backends import create_backend
-
-import re
 
 # Configure logging
 logging.basicConfig(
@@ -117,11 +118,16 @@ def create_app():
                     result = await loop.run_in_executor(None, session.transcribe, audio)
 
                     logger.info(f"Result ({result['processing_time_ms']:.0f}ms): {result['text'][:80]}...")
-                    await websocket.send(json.dumps(result))
+                    try:
+                        await websocket.send(json.dumps(result))
+                    except ConnectionClosed:
+                        break
 
                 else:
                     logger.warning(f"Unknown message type: {msg_type}")
 
+        except ConnectionClosed:
+            pass
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON: {e}")
         finally:
@@ -139,8 +145,16 @@ async def main():
     logger.info(f"Starting WebSocket server on ws://{host}:{port}")
     logger.info("Batch transcription with prompt conditioning")
 
+    stop = asyncio.Event()
+
+    loop = asyncio.get_event_loop()
+    loop.add_signal_handler(signal.SIGINT, stop.set)
+    loop.add_signal_handler(signal.SIGTERM, stop.set)
+
     async with serve(handler, host, port, max_size=10 * 1024 * 1024):
-        await asyncio.Future()
+        await stop.wait()
+
+    logger.info("Server stopped")
 
 
 if __name__ == "__main__":
