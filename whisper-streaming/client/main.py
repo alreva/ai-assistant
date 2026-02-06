@@ -269,8 +269,9 @@ class BatchClient:
 async def main():
     server = os.environ.get("SERVER_URL", "ws://localhost:8765")
     min_energy = float(os.environ.get("MIN_ENERGY", "0.01"))
+    silence_ms = int(os.environ.get("SILENCE_MS", "1000"))
 
-    client = BatchClient(server_url=server, min_energy=min_energy)
+    client = BatchClient(server_url=server, min_energy=min_energy, silence_threshold_ms=silence_ms)
     try:
         await client.run()
     except KeyboardInterrupt:

@@ -23,7 +23,7 @@ struct Args {
     #[arg(long, default_value = "16000")]
     sample_rate: u32,
 
-    #[arg(long, default_value = "1000")]
+    #[arg(long, env = "SILENCE_MS", default_value = "1000")]
     silence_threshold_ms: u32,
 
     #[arg(long, default_value = "5000")]
