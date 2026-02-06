@@ -117,10 +117,8 @@ struct TranscribeMessage {
 #[derive(Deserialize)]
 struct ServerResponse {
     #[serde(rename = "type")]
-    _msg_type: String,
+    msg_type: String,
     text: Option<String>,
-    #[serde(default)]
-    _processing_time_ms: Option<f64>,
 }
 
 struct LatencyStats {
@@ -367,10 +365,14 @@ async fn main() -> Result<()> {
                                         let e2e_ms = state.elapsed_ms() as f64;
 
                                         if let Ok(resp) = serde_json::from_str::<ServerResponse>(&text) {
-                                            let text_content = resp.text.unwrap_or_default().trim().to_string();
-                                            stats.record(e2e_ms);
-                                            if !text_content.is_empty() {
-                                                println!("[e2e:{:.0}ms rtt:{:.0}ms] {}", e2e_ms, rtt_ms, text_content);
+                                            if resp.msg_type == "noise" {
+                                                println!("[noise]");
+                                            } else {
+                                                let text_content = resp.text.unwrap_or_default().trim().to_string();
+                                                stats.record(e2e_ms);
+                                                if !text_content.is_empty() {
+                                                    println!("[e2e:{:.0}ms rtt:{:.0}ms] {}", e2e_ms, rtt_ms, text_content);
+                                                }
                                             }
                                         }
                                     }

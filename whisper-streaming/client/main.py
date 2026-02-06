@@ -242,11 +242,14 @@ class BatchClient:
                         if self._connected:
                             result, rtt_ms = await self._send_and_receive(audio)
                             if result:
-                                text = result.get("text", "").strip()
                                 total_ms = (time.perf_counter() - state.speech_start_time) * 1000
-                                self.latency_stats.record(total_ms)
-                                if text:
-                                    print(f"[e2e:{total_ms:.0f}ms rtt:{rtt_ms:.0f}ms] {text}")
+                                if result.get("type") == "noise":
+                                    print(f"[noise]")
+                                else:
+                                    text = result.get("text", "").strip()
+                                    self.latency_stats.record(total_ms)
+                                    if text:
+                                        print(f"[e2e:{total_ms:.0f}ms rtt:{rtt_ms:.0f}ms] {text}")
                         else:
                             print(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
 

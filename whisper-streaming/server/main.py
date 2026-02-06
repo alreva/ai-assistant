@@ -34,6 +34,16 @@ def is_hallucination(text: str) -> bool:
     if re.search(r'(.{1,4})\1{4,}', text):
         return True
 
+    # Repeated words (like "funny, funny, funny" 10+ times)
+    words = re.findall(r'\b\w+\b', text.lower())
+    if len(words) >= 10:
+        from collections import Counter
+        word_counts = Counter(words)
+        most_common_word, most_common_count = word_counts.most_common(1)[0]
+        # If one word makes up more than 50% of all words and appears 10+ times
+        if most_common_count >= 10 and most_common_count / len(words) > 0.5:
+            return True
+
     # Repeated phrases: split into sentences and check for duplicates
     sentences = re.split(r'[.!?]+', text)
     sentences = [s.strip().lower() for s in sentences if len(s.strip()) > 10]
@@ -70,14 +80,13 @@ class TranscriptionSession:
 
         text = result.text.strip()
 
-        # Filter hallucinations
+        # Filter hallucinations - return noise response
         if is_hallucination(text):
             logger.debug(f"Filtered hallucination: {text[:50]}...")
-            text = ""
+            return {"type": "noise"}
 
         # Only update prompt with valid transcriptions
-        if text:
-            self.previous_transcript = text
+        self.previous_transcript = text
 
         return {
             "type": "result",
@@ -127,7 +136,10 @@ def create_app():
                     session.sample_rate = sample_rate
                     result = await loop.run_in_executor(None, session.transcribe, audio)
 
-                    logger.info(f"Result ({result['processing_time_ms']:.0f}ms): {result['text'][:80]}...")
+                    if result["type"] == "noise":
+                        logger.info("Detected noise/hallucination")
+                    else:
+                        logger.info(f"Result ({result['processing_time_ms']:.0f}ms): {result['text'][:80]}...")
                     try:
                         await websocket.send(json.dumps(result))
                     except ConnectionClosed:
