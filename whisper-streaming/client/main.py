@@ -80,7 +80,7 @@ class BatchClient:
         server_url: str,
         sample_rate: int = 16000,
         chunk_ms: int = 30,
-        silence_threshold_ms: int = 300,
+        silence_threshold_ms: int = 700,
         max_speech_ms: int = 5000,
         min_energy: float = 0.01,
         onset_threshold: int = 3,

@@ -34,6 +34,16 @@ def is_hallucination(text: str) -> bool:
     if re.search(r'(.{1,4})\1{4,}', text):
         return True
 
+    # Repeated phrases: split into sentences and check for duplicates
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip().lower() for s in sentences if len(s.strip()) > 10]
+    if len(sentences) >= 3:
+        from collections import Counter
+        counts = Counter(sentences)
+        most_common_count = counts.most_common(1)[0][1] if counts else 0
+        if most_common_count >= 3:
+            return True
+
     # Very high ratio of non-ASCII to ASCII (likely wrong language detection)
     ascii_chars = sum(1 for c in text if ord(c) < 128)
     if len(text) > 10 and ascii_chars / len(text) < 0.1:
