@@ -21,30 +21,42 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def is_hallucination(text: str) -> bool:
-    """Detect common Whisper hallucinations."""
+def clean_hallucination(text: str) -> str | None:
+    """Clean text by removing hallucinations. Returns None if entirely noise."""
     if not text or len(text.strip()) < 2:
-        return True
+        return None
 
     # Repeated character patterns (like లిలిలిలి or ༼ ༼ ༼)
     if re.search(r'(.)\1{5,}', text):
-        return True
+        return None
 
-    # Repeated short patterns (like "लिलि" or "chool" repeated)
-    if re.search(r'(.{2,8})\1{4,}', text):
-        return True
+    # Repeated short patterns (like "लिलि" or "chool" repeated 4+ times)
+    match = re.search(r'(.{2,8})\1{3,}', text)
+    if match:
+        # Truncate before repetition, keep if enough valid content
+        truncated = text[:match.start()].strip()
+        if len(truncated) >= 10:
+            return truncated
+        return None
 
-    # Repeated words (like "funny, funny, funny" or "registration registration...")
-    words = re.findall(r'\b\w+\b', text.lower())
-    if len(words) >= 5:
-        from collections import Counter
-        word_counts = Counter(words)
-        most_common_word, most_common_count = word_counts.most_common(1)[0]
-        # If one word makes up more than 50% of all words and appears 5+ times
-        if most_common_count >= 5 and most_common_count / len(words) > 0.5:
-            return True
+    # Repeated words - find where repetition starts
+    # Look for pattern: word word word word word (5+ times)
+    match = re.search(r'(\b\w+\b)(?:\s+\1){4,}', text, re.IGNORECASE)
+    if match:
+        truncated = text[:match.start()].strip()
+        if len(truncated) >= 10:
+            return truncated
+        return None
 
-    # Repeated phrases: split into sentences and check for duplicates
+    # Repeated phrases like "to make to make to make"
+    match = re.search(r'(\b\w+\s+\w+\b)(?:\s+\1){3,}', text, re.IGNORECASE)
+    if match:
+        truncated = text[:match.start()].strip()
+        if len(truncated) >= 10:
+            return truncated
+        return None
+
+    # Repeated sentences
     sentences = re.split(r'[.!?]+', text)
     sentences = [s.strip().lower() for s in sentences if len(s.strip()) > 10]
     if len(sentences) >= 3:
@@ -52,14 +64,14 @@ def is_hallucination(text: str) -> bool:
         counts = Counter(sentences)
         most_common_count = counts.most_common(1)[0][1] if counts else 0
         if most_common_count >= 3:
-            return True
+            return None
 
     # Very high ratio of non-ASCII to ASCII (likely wrong language detection)
     ascii_chars = sum(1 for c in text if ord(c) < 128)
     if len(text) > 10 and ascii_chars / len(text) < 0.1:
-        return True
+        return None
 
-    return False
+    return text
 
 
 class TranscriptionSession:
@@ -78,12 +90,14 @@ class TranscriptionSession:
             initial_prompt=self.previous_transcript or None
         )
 
-        text = result.text.strip()
+        raw_text = result.text.strip()
 
-        # Filter hallucinations - return noise response with sample
-        if is_hallucination(text):
-            logger.debug(f"Filtered hallucination: {text[:50]}...")
-            sample = text[:50] + "..." if len(text) > 50 else text
+        # Clean hallucinations - may truncate or return None
+        text = clean_hallucination(raw_text)
+
+        if text is None:
+            logger.debug(f"Filtered hallucination: {raw_text[:50]}...")
+            sample = raw_text[:50] + "..." if len(raw_text) > 50 else raw_text
             return {"type": "noise", "sample": sample}
 
         # Only update prompt with valid transcriptions
