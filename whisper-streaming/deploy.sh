@@ -12,12 +12,15 @@
 
 set -e
 
+# Get script directory (where whisper-streaming files are)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 RPI_HOST="${1:-${RPI_HOST:-alreva@rpi.local}}"
 DEST_DIR="${2:-${DEST_DIR:-~/whisper-streaming}}"
 
 echo "==> Deploying to $RPI_HOST:$DEST_DIR"
 
-# Files to copy
+# Files to copy (relative to script dir)
 FILES=(
     "pyproject.toml"
     "server/"
@@ -25,6 +28,8 @@ FILES=(
     "rpi-server.sh"
     "rpi-client.sh"
 )
+
+cd "$SCRIPT_DIR"
 
 # Create destination directory
 ssh "$RPI_HOST" "mkdir -p $DEST_DIR"
