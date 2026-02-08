@@ -2,22 +2,18 @@
 # Deploy whisper-streaming to Raspberry Pi
 #
 # Usage:
-#   ./deploy.sh user@rpi-host [dest_dir]
+#   ./deploy.sh                      # deploy to default (pi@rpi.local)
+#   ./deploy.sh user@host            # deploy to specific host
+#   ./deploy.sh user@host dest_dir   # deploy to specific host and dir
 #
-# Example:
-#   ./deploy.sh pi@raspberrypi.local
-#   ./deploy.sh pi@192.168.1.100 /home/pi/whisper
+# Environment:
+#   RPI_HOST - default: pi@rpi.local
+#   DEST_DIR - default: ~/whisper-streaming
 
 set -e
 
-if [ -z "$1" ]; then
-    echo "Usage: ./deploy.sh user@host [dest_dir]"
-    echo "Example: ./deploy.sh pi@raspberrypi.local"
-    exit 1
-fi
-
-RPI_HOST="$1"
-DEST_DIR="${2:-~/whisper-streaming}"
+RPI_HOST="${1:-${RPI_HOST:-alreva@rpi.local}}"
+DEST_DIR="${2:-${DEST_DIR:-~/whisper-streaming}}"
 
 echo "==> Deploying to $RPI_HOST:$DEST_DIR"
 
