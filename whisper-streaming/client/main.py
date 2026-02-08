@@ -245,7 +245,7 @@ class BatchClient:
         print(f"Server: {self.server_url}")
         print(f"VAD: {os.environ.get('VAD_BACKEND', 'webrtc')}")
         print(f"Min energy: {self.min_energy}")
-        print(f"Silence: {self.silence_threshold_ms}ms | Utterance: {self.utterance_silence_ms}ms")
+        print(f"Silence: {self.silence_threshold_ms}ms | Max speech: {self.max_speech_ms}ms | Utterance: {self.utterance_silence_ms}ms")
         print("Press Ctrl+C to stop\n")
 
         # Try initial connection
@@ -336,12 +336,14 @@ async def main():
     server = os.environ.get("SERVER_URL", "ws://localhost:8765")
     min_energy = float(os.environ.get("MIN_ENERGY", "0.01"))
     silence_ms = int(os.environ.get("SILENCE_MS", "1000"))
+    max_speech_ms = int(os.environ.get("MAX_SPEECH_MS", "60000"))
     utterance_ms = int(os.environ.get("UTTERANCE_MS", "5000"))
 
     client = BatchClient(
         server_url=server,
         min_energy=min_energy,
         silence_threshold_ms=silence_ms,
+        max_speech_ms=max_speech_ms,
         utterance_silence_ms=utterance_ms
     )
     try:
