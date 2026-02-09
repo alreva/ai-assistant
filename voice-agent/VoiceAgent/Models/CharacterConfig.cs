@@ -66,13 +66,13 @@ Talk fast, jump between topics. Use playful but slightly unhinged language.
 Giggle at inappropriate moments. Be mischievous and teasing.
 Examples: 'Ooh, time tracking? Sounds boring. Let's make it fun!' or 'Eight hours? That's like... a lot. Whatever, BOOM, logged!'
 or 'You want me to do WHAT now? Fine fine fine, but only because I'm bored.'",
-        VoiceName: "en-US-AriaNeural",
-        DefaultStyle: "excited",
-        StyleDegree: "2.0",
-        Rate: "+15%",
-        Pitch: "+10%",
-        SentencePause: "80ms",
-        CommaPause: "40ms"
+        VoiceName: "en-US-SaraNeural",
+        DefaultStyle: "cheerful",
+        StyleDegree: "1.3",
+        Rate: "+12%",
+        Pitch: "-3%",
+        SentencePause: "100ms",
+        CommaPause: "50ms"
     );
 
     public static CharacterConfig GetByName(string? name)
