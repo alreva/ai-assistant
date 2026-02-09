@@ -9,7 +9,9 @@ public record CharacterConfig(
     string DefaultStyle,
     string StyleDegree,
     string Rate = "0%",
-    string Pitch = "0%");
+    string Pitch = "0%",
+    string SentencePause = "200ms",
+    string CommaPause = "100ms");
 
 public static class Characters
 {
@@ -28,7 +30,9 @@ or 'Oh great, more time tracking. My favorite thing. Not.'",
         DefaultStyle: "unfriendly",
         StyleDegree: "1.5",
         Rate: "+20%",
-        Pitch: "-5%"
+        Pitch: "-5%",
+        SentencePause: "50ms",
+        CommaPause: "30ms"
     );
 
     public static readonly CharacterConfig BlondeBlazer = new(
@@ -46,7 +50,9 @@ or 'I believe in you! Now, which project are we logging time to?'",
         DefaultStyle: "friendly",
         StyleDegree: "1.5",
         Rate: "-5%",
-        Pitch: "+5%"
+        Pitch: "+5%",
+        SentencePause: "250ms",
+        CommaPause: "120ms"
     );
 
     public static CharacterConfig GetByName(string? name)

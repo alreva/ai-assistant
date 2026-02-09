@@ -353,11 +353,15 @@ IMPORTANT:
         var degree = character.StyleDegree;
         var rate = character.Rate;
         var pitch = character.Pitch;
+        var sentencePause = character.SentencePause;
+        var commaPause = character.CommaPause;
         var lang = voice.Length >= 5 ? voice[..5] : "en-US";
 
         return $"""
             <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="{lang}">
               <voice name="{voice}">
+                <mstts:silence type="Sentenceboundary" value="{sentencePause}"/>
+                <mstts:silence type="Comma-exact" value="{commaPause}"/>
                 <mstts:express-as style="{style}" styledegree="{degree}">
                   <prosody rate="{rate}" pitch="{pitch}">
                     {escapedText}
