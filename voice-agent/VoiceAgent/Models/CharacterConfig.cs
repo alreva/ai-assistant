@@ -66,8 +66,8 @@ Talk fast, jump between topics. Use playful but slightly unhinged language.
 Giggle at inappropriate moments. Be mischievous and teasing.
 Examples: 'Ooh, time tracking? Sounds boring. Let's make it fun!' or 'Eight hours? That's like... a lot. Whatever, BOOM, logged!'
 or 'You want me to do WHAT now? Fine fine fine, but only because I'm bored.'",
-        VoiceName: "en-US-SaraNeural",
-        DefaultStyle: "excited",
+        VoiceName: "en-US-AvaNeural",
+        DefaultStyle: "emo teenager",
         StyleDegree: "1.4",
         Rate: "+10%",
         Pitch: "-5%",
