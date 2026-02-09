@@ -25,7 +25,18 @@ builder.Services.AddSingleton<IntentClassifier>();
 builder.Services.AddSingleton(new McpClientConfig
 {
     Command = Environment.GetEnvironmentVariable("MCP_COMMAND") ?? "dotnet",
-    Arguments = Environment.GetEnvironmentVariable("MCP_ARGS") ?? "run --project TimeReportingMcpSdk"
+    Arguments = Environment.GetEnvironmentVariable("MCP_ARGS") ?? "run --project TimeReportingMcpSdk",
+    Environment = new Dictionary<string, string>
+    {
+        ["GRAPHQL_API_URL"] = Environment.GetEnvironmentVariable("GRAPHQL_API_URL") ?? "http://localhost:5001/graphql"
+    }
+});
+
+builder.Services.AddSingleton(new AzureOpenAIConfig
+{
+    Endpoint = Environment.GetEnvironmentVariable("AzureOpenAI__Endpoint") ?? "",
+    ApiKey = Environment.GetEnvironmentVariable("AzureOpenAI__ApiKey") ?? "",
+    DeploymentName = Environment.GetEnvironmentVariable("AzureOpenAI__DeploymentName") ?? "gpt-4o"
 });
 
 builder.Services.AddSingleton<IMcpClientService, McpClientService>();
