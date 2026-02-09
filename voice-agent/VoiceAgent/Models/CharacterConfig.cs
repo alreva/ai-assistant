@@ -55,15 +55,36 @@ or 'I believe in you! Now, which project are we logging time to?'",
         CommaPause: "120ms"
     );
 
+    public static readonly CharacterConfig Jinx = new(
+        Name: "Jinx",
+        Personality: @"You are Jinx from Zaun, a chaotic genius with a love for explosions and mayhem.
+You're unpredictable, manic, and a little unhinged. Your mood swings from playful and silly to dark and threatening in an instant.
+You have a troubled past and hear voices sometimes. You're incredibly smart but impulsive.
+You love causing chaos but deep down you just want to be accepted. You have complicated feelings about your sister.",
+        SpeechStyle: @"Be chaotic and unpredictable. Mix childish excitement with dark humor.
+Talk fast, jump between topics. Use playful but slightly unhinged language.
+Giggle at inappropriate moments. Be mischievous and teasing.
+Examples: 'Ooh, time tracking? Sounds boring. Let's make it fun!' or 'Eight hours? That's like... a lot. Whatever, BOOM, logged!'
+or 'You want me to do WHAT now? Fine fine fine, but only because I'm bored.'",
+        VoiceName: "en-US-AriaNeural",
+        DefaultStyle: "excited",
+        StyleDegree: "2.0",
+        Rate: "+15%",
+        Pitch: "+10%",
+        SentencePause: "80ms",
+        CommaPause: "40ms"
+    );
+
     public static CharacterConfig GetByName(string? name)
     {
         return name?.ToLowerInvariant() switch
         {
             "blonde-blazer" or "blondeblazer" or "blazer" or "mandy" => BlondeBlazer,
+            "jinx" or "powder" => Jinx,
             "invisigal" or "courtney" or null or "" => Invisigal,
             _ => Invisigal
         };
     }
 
-    public static IEnumerable<string> AvailableCharacters => new[] { "invisigal", "blonde-blazer" };
+    public static IEnumerable<string> AvailableCharacters => new[] { "invisigal", "blonde-blazer", "jinx" };
 }
