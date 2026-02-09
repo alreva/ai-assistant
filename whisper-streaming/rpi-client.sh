@@ -14,6 +14,7 @@
 #   CLIENT_MODE   - batch or streaming (default: batch)
 #   PAUSE_MS      - Pause before sending chunk in streaming mode (default: 400)
 #   AGENT_URL     - Voice agent WebSocket URL (optional, e.g., ws://localhost:8766)
+#   AGENT_CHARACTER - Agent character: invisigal or blonde-blazer (default: invisigal)
 #   TTS_URL       - TTS service WebSocket URL (optional, e.g., ws://localhost:8767)
 #   TTS_VOICE     - Azure TTS voice name (default: en-US-JennyNeural)
 
@@ -34,6 +35,7 @@ export VAD_BACKEND="${VAD_BACKEND:-webrtc}"
 export CLIENT_MODE="${CLIENT_MODE:-batch}"
 export PAUSE_MS="${PAUSE_MS:-400}"
 export AGENT_URL="${AGENT_URL:-}"  # Optional: ws://localhost:8766
+export AGENT_CHARACTER="${AGENT_CHARACTER:-}"  # Optional: invisigal or blonde-blazer
 export TTS_URL="${TTS_URL:-}"      # Optional: ws://localhost:8767
 export TTS_VOICE="${TTS_VOICE:-en-US-JennyNeural}"
 
@@ -48,6 +50,9 @@ fi
 echo "  Max speech: ${MAX_SPEECH_MS}ms"
 if [ -n "$AGENT_URL" ]; then
     echo "  Agent: $AGENT_URL"
+    if [ -n "$AGENT_CHARACTER" ]; then
+        echo "  Character: $AGENT_CHARACTER"
+    fi
 fi
 if [ -n "$TTS_URL" ]; then
     echo "  TTS: $TTS_URL ($TTS_VOICE)"
