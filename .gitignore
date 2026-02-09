@@ -25,3 +25,15 @@ build/
 
 # Claude
 .claude/
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+*.nupkg
+*.snupkg
+project.lock.json
+*.nuget.props
+*.nuget.targets
