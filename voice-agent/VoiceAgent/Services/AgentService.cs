@@ -1,4 +1,5 @@
 // VoiceAgent/Services/AgentService.cs
+using Microsoft.Extensions.Logging;
 using VoiceAgent.Models;
 
 namespace VoiceAgent.Services;
@@ -8,21 +9,28 @@ public class AgentService : IAgentService
     private readonly IMcpClientService _mcpClient;
     private readonly SessionManager _sessionManager;
     private readonly IntentClassifier _intentClassifier;
+    private readonly ILogger<AgentService> _logger;
 
     public AgentService(
         IMcpClientService mcpClient,
         SessionManager sessionManager,
-        IntentClassifier intentClassifier)
+        IntentClassifier intentClassifier,
+        ILogger<AgentService> logger)
     {
         _mcpClient = mcpClient;
         _sessionManager = sessionManager;
         _intentClassifier = intentClassifier;
+        _logger = logger;
     }
 
     public async Task<AgentResponse> ProcessMessageAsync(string sessionId, string text)
     {
+        _logger.LogInformation(">>> User request [session={SessionId}]: {Text}", sessionId, text);
+
         var session = _sessionManager.GetOrCreateSession(sessionId);
-        var intent = _intentClassifier.ClassifyIntent(text);
+        var intent = await _intentClassifier.ClassifyIntentAsync(text);
+
+        _logger.LogInformation("Intent classified: {Intent}", intent);
 
         // Check for expired confirmation
         if (session.HasPendingConfirmation && _sessionManager.IsConfirmationExpired(session))
@@ -36,11 +44,25 @@ public class AgentService : IAgentService
         {
             if (intent == IntentType.Confirmation)
             {
-                var result = await _mcpClient.ExecuteUpdateAsync(
-                    session.PendingAction!,
-                    session.PendingActionDescription!);
-                session.ClearPendingConfirmation();
-                return new AgentResponse { Text = result, AwaitingConfirmation = false };
+                if (session.HasPendingUpdate)
+                {
+                    // Execute the pre-validated tool call
+                    var result = await _mcpClient.ExecutePreparedUpdateAsync(
+                        session.PendingToolName!,
+                        session.PendingToolArguments!,
+                        session.PendingUserQuery!);
+                    session.ClearPendingConfirmation();
+                    return new AgentResponse { Text = result, AwaitingConfirmation = false };
+                }
+                else
+                {
+                    // Fallback to old behavior
+                    var result = await _mcpClient.ExecuteUpdateAsync(
+                        session.PendingAction!,
+                        session.PendingActionDescription!);
+                    session.ClearPendingConfirmation();
+                    return new AgentResponse { Text = result, AwaitingConfirmation = false };
+                }
             }
 
             if (intent == IntentType.Cancellation)
@@ -53,13 +75,16 @@ public class AgentService : IAgentService
             session.ClearPendingConfirmation();
         }
 
-        return intent switch
+        var response = intent switch
         {
             IntentType.Query => await HandleQueryAsync(text),
             IntentType.Update => await HandleUpdateAsync(session, text),
             IntentType.EndSession => HandleEndSession(sessionId),
             _ => new AgentResponse { Text = "I'm not sure what you mean. Could you rephrase that?" }
         };
+
+        _logger.LogInformation("<<< Agent response: {Text}", response.Text);
+        return response;
     }
 
     private async Task<AgentResponse> HandleQueryAsync(string text)
@@ -70,11 +95,25 @@ public class AgentService : IAgentService
 
     private async Task<AgentResponse> HandleUpdateAsync(Session session, string text)
     {
-        var summary = await _mcpClient.GetActionSummaryAsync(text);
-        session.SetPendingConfirmation("update", text);
+        // Validate and prepare the update BEFORE asking for confirmation
+        var prepared = await _mcpClient.PrepareUpdateAsync(text);
+
+        if (!prepared.IsValid)
+        {
+            _logger.LogWarning("Could not prepare update for: {Text}", text);
+            return new AgentResponse
+            {
+                Text = "I couldn't understand that command. Try saying something like 'log 8 hours on INTERNAL'.",
+                AwaitingConfirmation = false
+            };
+        }
+
+        // Store the validated tool call for confirmation
+        session.SetPendingUpdate(prepared.ToolName!, prepared.Arguments!, text);
+
         return new AgentResponse
         {
-            Text = $"{summary} Say yes to confirm or no to cancel.",
+            Text = $"{prepared.Summary} Say yes to confirm or no to cancel.",
             AwaitingConfirmation = true
         };
     }

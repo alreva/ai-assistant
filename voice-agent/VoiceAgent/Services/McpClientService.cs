@@ -97,8 +97,13 @@ public class McpClientService : IMcpClientService, IAsyncDisposable
                 .OfType<TextContentBlock>()
                 .Select(c => c.Text));
 
+            _logger.LogInformation("MCP tool result: {Result}", text);
+
             // Convert to TTS-friendly format
-            return ConvertToTtsFriendly(text);
+            var ttsResult = await FormatForTtsAsync(text, query, toolCall.ToolName);
+            _logger.LogInformation("TTS formatted: {Result}", ttsResult);
+
+            return ttsResult;
         }
         catch (Exception ex)
         {
@@ -133,7 +138,12 @@ public class McpClientService : IMcpClientService, IAsyncDisposable
                 .OfType<TextContentBlock>()
                 .Select(c => c.Text));
 
-            return ConvertToTtsFriendly(text);
+            _logger.LogInformation("MCP tool result: {Result}", text);
+
+            var ttsResult = await FormatForTtsAsync(text, parameters, toolCall.ToolName);
+            _logger.LogInformation("TTS formatted: {Result}", ttsResult);
+
+            return ttsResult;
         }
         catch (Exception ex)
         {
@@ -169,6 +179,138 @@ Just respond with the summary, nothing else.";
         }
     }
 
+    public async Task<PreparedUpdate> PrepareUpdateAsync(string text)
+    {
+        await EnsureInitializedAsync();
+
+        try
+        {
+            // Single LLM call to interpret, validate, and summarize
+            var tools = await _mcpClient!.ListToolsAsync();
+            var toolDescriptions = string.Join("\n", tools.Select(t =>
+                $"- {t.Name}: {t.Description ?? "No description"}"));
+
+            var today = DateTime.Now.ToString("yyyy-MM-dd");
+            var prompt = $@"You are parsing a voice command for a time reporting system.
+The speech recognition may have errors, so interpret the user's intent.
+Today's date is {today}.
+
+User said: ""{text}""
+
+Available MCP tools:
+{toolDescriptions}
+
+Tool argument schemas:
+- log_time: {{""projectCode"": ""PROJECT"", ""task"": ""Development"", ""standardHours"": 8, ""overtimeHours"": 0, ""startDate"": ""YYYY-MM-DD"", ""completionDate"": ""YYYY-MM-DD""}}
+- delete_time_entry: {{""id"": ""uuid""}}
+- submit_time_entry: {{""id"": ""uuid""}}
+- update_time_entry: {{""id"": ""uuid"", ...fields to update}}
+- move_task_to_project: {{""entryId"": ""uuid"", ""newProjectCode"": ""CODE"", ""newTask"": ""Task""}}
+
+Respond with a JSON object containing:
+1. ""tool"": the tool name to call (or null if you can't understand)
+2. ""arguments"": the tool arguments
+3. ""summary"": a human-readable summary starting with ""I'll"" (e.g., ""I'll log 8 hours on INTERNAL for today"")
+
+Example response:
+{{
+  ""tool"": ""log_time"",
+  ""arguments"": {{""projectCode"": ""INTERNAL"", ""task"": ""Development"", ""standardHours"": 8, ""startDate"": ""{today}"", ""completionDate"": ""{today}""}},
+  ""summary"": ""I'll log 8 hours on the INTERNAL project for today.""
+}}
+
+Rules:
+- Interpret speech recognition errors (e.g., ""head to hours"" might mean ""add 2 hours"")
+- For dates use YYYY-MM-DD format
+- For ""today"" use {today}
+- For log_time: startDate and completionDate should be the same for single-day entries
+- For standardHours default to 8 if not specified
+- For task default to ""Development"" if not specified
+- If you cannot determine a valid action, respond with: {{""tool"": null, ""summary"": ""I couldn't understand that command.""}}";
+
+            _logger.LogInformation("PrepareUpdate: input=\"{Text}\"", text);
+
+            var response = await _chatClient!.CompleteChatAsync([new UserChatMessage(prompt)]);
+            var responseText = response.Value.Content[0].Text;
+
+            _logger.LogInformation("PrepareUpdate: LLM response={Response}", responseText);
+
+            // Parse the response
+            var jsonMatch = Regex.Match(responseText, @"\{[\s\S]*\}");
+            if (!jsonMatch.Success)
+            {
+                _logger.LogWarning("PrepareUpdate: No JSON found in response");
+                return new PreparedUpdate(false, "I couldn't understand that command.", null, null);
+            }
+
+            var json = JsonDocument.Parse(jsonMatch.Value);
+            var toolName = json.RootElement.TryGetProperty("tool", out var toolProp) ? toolProp.GetString() : null;
+            var summary = json.RootElement.TryGetProperty("summary", out var summaryProp) ? summaryProp.GetString() : "I'll process your request.";
+
+            if (string.IsNullOrEmpty(toolName))
+            {
+                _logger.LogWarning("PrepareUpdate: Tool name is null/empty");
+                return new PreparedUpdate(false, summary ?? "I couldn't understand that command.", null, null);
+            }
+
+            var arguments = new Dictionary<string, object?>();
+            if (json.RootElement.TryGetProperty("arguments", out var argsElement))
+            {
+                foreach (var prop in argsElement.EnumerateObject())
+                {
+                    arguments[prop.Name] = prop.Value.ValueKind switch
+                    {
+                        JsonValueKind.String => prop.Value.GetString(),
+                        JsonValueKind.Number => prop.Value.GetDouble(),
+                        JsonValueKind.True => true,
+                        JsonValueKind.False => false,
+                        JsonValueKind.Null => null,
+                        _ => prop.Value.GetRawText()
+                    };
+                }
+            }
+
+            _logger.LogInformation("PrepareUpdate: Validated tool={Tool} args={Args} summary={Summary}",
+                toolName, JsonSerializer.Serialize(arguments), summary);
+
+            return new PreparedUpdate(true, summary!, toolName, arguments);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error preparing update for: {Text}", text);
+            return new PreparedUpdate(false, "Sorry, something went wrong.", null, null);
+        }
+    }
+
+    public async Task<string> ExecutePreparedUpdateAsync(string toolName, Dictionary<string, object?> arguments, string userQuery)
+    {
+        await EnsureInitializedAsync();
+
+        try
+        {
+            _logger.LogInformation("ExecutePreparedUpdate: Calling MCP tool: {Tool} with args: {Args}",
+                toolName, JsonSerializer.Serialize(arguments));
+
+            var result = await _mcpClient!.CallToolAsync(toolName, arguments);
+
+            var text = string.Join("\n", result.Content
+                .OfType<TextContentBlock>()
+                .Select(c => c.Text));
+
+            _logger.LogInformation("ExecutePreparedUpdate: MCP tool result: {Result}", text);
+
+            var ttsResult = await FormatForTtsAsync(text, userQuery, toolName);
+            _logger.LogInformation("ExecutePreparedUpdate: TTS formatted: {Result}", ttsResult);
+
+            return ttsResult;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error executing prepared update: {Tool}", toolName);
+            return "Sorry, something went wrong while processing your request.";
+        }
+    }
+
     private async Task<ToolCallInfo?> DetermineToolCallAsync(string userText, bool isQuery)
     {
         var tools = await _mcpClient!.ListToolsAsync();
@@ -190,6 +332,7 @@ IMPORTANT - Tool argument schemas:
 - delete_time_entry: {{""entryId"": ""uuid""}}
 - submit_time_entry: {{""entryId"": ""uuid""}}
 - get_available_projects: {{}}
+- who_am_i: {{}} (shows current user identity and permissions)
 
 {(isQuery ? "This is a QUERY command - the user wants to retrieve information." : "This is an UPDATE command - the user wants to make a change.")}
 
@@ -208,11 +351,13 @@ Rules:
 
 If you cannot determine a valid tool call, respond with: {{""tool"": null}}";
 
+        _logger.LogInformation("DetermineToolCall: input=\"{UserText}\" isQuery={IsQuery}", userText, isQuery);
+
         var response = await _chatClient!.CompleteChatAsync(
             [new UserChatMessage(prompt)]);
 
         var responseText = response.Value.Content[0].Text;
-        _logger.LogDebug("LLM response for tool determination: {Response}", responseText);
+        _logger.LogInformation("DetermineToolCall: LLM response={Response}", responseText);
 
         try
         {
@@ -220,6 +365,7 @@ If you cannot determine a valid tool call, respond with: {{""tool"": null}}";
             var jsonMatch = Regex.Match(responseText, @"\{[\s\S]*\}");
             if (!jsonMatch.Success)
             {
+                _logger.LogWarning("DetermineToolCall: No JSON found in response");
                 return null;
             }
 
@@ -228,6 +374,7 @@ If you cannot determine a valid tool call, respond with: {{""tool"": null}}";
 
             if (string.IsNullOrEmpty(toolName))
             {
+                _logger.LogWarning("DetermineToolCall: Tool name is null/empty");
                 return null;
             }
 
@@ -248,6 +395,7 @@ If you cannot determine a valid tool call, respond with: {{""tool"": null}}";
                 }
             }
 
+            _logger.LogInformation("DetermineToolCall: output tool={Tool} args={Args}", toolName, JsonSerializer.Serialize(arguments));
             return new ToolCallInfo(toolName, arguments);
         }
         catch (Exception ex)
@@ -257,33 +405,40 @@ If you cannot determine a valid tool call, respond with: {{""tool"": null}}";
         }
     }
 
-    private string ConvertToTtsFriendly(string text)
+    private async Task<string> FormatForTtsAsync(string rawResult, string userQuery, string toolName)
     {
-        // Remove common emojis used in the MCP responses
-        text = text.Replace("✅", "")
-                   .Replace("❌", "")
-                   .Replace("📋", "")
-                   .Replace("⚠️", "")
-                   .Replace("•", "-");
+        var prompt = $@"Convert this data into a natural spoken response for text-to-speech.
 
-        // Remove markdown formatting
-        text = Regex.Replace(text, @"\*\*([^*]+)\*\*", "$1"); // Bold
-        text = Regex.Replace(text, @"\*([^*]+)\*", "$1"); // Italic
-        text = Regex.Replace(text, @"^#+\s*", "", RegexOptions.Multiline); // Headers
-        text = Regex.Replace(text, @"^\s*-\s*", "", RegexOptions.Multiline); // Bullets
+User asked: ""{userQuery}""
+Tool called: {toolName}
+Result data: {rawResult}
 
-        // Shorten UUIDs to last 4 chars for TTS
-        text = Regex.Replace(text, @"ID:\s*[a-f0-9-]{32,36}", m =>
+Requirements:
+- Respond ONLY about the data returned - do not make up information
+- Speak naturally, like talking to a friend
+- Say dates as ""November 28th"" not ""11/28/2025""
+- Say ""8 hours"" not ""8.00h""
+- Never read UUIDs or IDs
+- Summarize lists, don't read every item
+- Keep it brief
+- No bullet points or formatting
+
+Response:";
+
+        try
         {
-            var id = m.Value.Replace("ID:", "").Trim();
-            return $"ID ending in {id[^4..]}";
-        });
-
-        // Clean up extra whitespace
-        text = Regex.Replace(text, @"\n\s*\n", "\n");
-        text = text.Trim();
-
-        return text;
+            var response = await _chatClient!.CompleteChatAsync(
+                [new UserChatMessage(prompt)]);
+            return response.Value.Content[0].Text.Trim();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "TTS formatting failed");
+            // Basic fallback - strip formatting
+            var text = Regex.Replace(rawResult, @"[a-f0-9-]{32,36}", "");
+            text = Regex.Replace(text, @"[\*#•✅❌📋⚠️]", "");
+            return text.Trim();
+        }
     }
 
     public async ValueTask DisposeAsync()

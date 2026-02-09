@@ -20,8 +20,6 @@ builder.Services.AddSingleton(new SessionManager(
     TimeSpan.FromHours(sessionTimeoutHours),
     TimeSpan.FromMinutes(confirmationTimeoutMinutes)));
 
-builder.Services.AddSingleton<IntentClassifier>();
-
 builder.Services.AddSingleton(new McpClientConfig
 {
     Command = Environment.GetEnvironmentVariable("MCP_COMMAND") ?? "dotnet",
@@ -39,6 +37,7 @@ builder.Services.AddSingleton(new AzureOpenAIConfig
     DeploymentName = Environment.GetEnvironmentVariable("AzureOpenAI__DeploymentName") ?? "gpt-4o"
 });
 
+builder.Services.AddSingleton<IntentClassifier>();
 builder.Services.AddSingleton<IMcpClientService, McpClientService>();
 builder.Services.AddSingleton<IAgentService, AgentService>();
 builder.Services.AddSingleton<WebSocketHandler>();
@@ -59,6 +58,7 @@ var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;
+    logger.LogInformation("Shutting down...");
     cts.Cancel();
 };
 
@@ -66,7 +66,22 @@ try
 {
     while (!cts.Token.IsCancellationRequested)
     {
-        var context = await listener.GetContextAsync();
+        var getContextTask = listener.GetContextAsync();
+
+        // Race between getting a connection and cancellation
+        var tcs = new TaskCompletionSource<bool>();
+        await using (cts.Token.Register(() => tcs.TrySetResult(true)))
+        {
+            var completedTask = await Task.WhenAny(getContextTask, tcs.Task);
+
+            if (completedTask == tcs.Task)
+            {
+                // Cancellation requested - exit cleanly
+                break;
+            }
+        }
+
+        var context = await getContextTask;
 
         if (context.Request.IsWebSocketRequest)
         {
@@ -83,6 +98,7 @@ try
 finally
 {
     listener.Stop();
+    logger.LogInformation("Server stopped");
 }
 
 static async Task HandleWebSocketAsync(

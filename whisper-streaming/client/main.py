@@ -23,7 +23,7 @@ class AgentClient:
         self._ws = None
         self._connected = False
 
-    async def connect(self) -> bool:
+    async def connect(self, silent: bool = False) -> bool:
         """Connect to the voice agent."""
         try:
             self._ws = await websockets.connect(self.agent_url, close_timeout=2)
@@ -33,15 +33,24 @@ class AgentClient:
         except (OSError, websockets.exceptions.WebSocketException) as e:
             self._connected = False
             self._ws = None
-            print(f"[agent] Failed to connect: {e}")
+            if not silent:
+                print(f"[agent] Not available: {e}")
             return False
+
+    async def ensure_connected(self) -> bool:
+        """Ensure connection, reconnecting if needed."""
+        if self._connected and self._ws is not None:
+            return True
+        return await self.connect(silent=True)
 
     async def send_transcription(self, text: str) -> str | None:
         """Send transcription to agent and get response."""
-        if not self._connected or self._ws is None:
+        # Try to reconnect if disconnected
+        if not await self.ensure_connected():
             return None
 
         try:
+            print(f"[you -> agent] {text}")
             message = json.dumps({
                 "type": "transcription",
                 "text": text,
@@ -51,9 +60,15 @@ class AgentClient:
             response = await asyncio.wait_for(self._ws.recv(), timeout=60)
             data = json.loads(response)
             return data.get("text", "")
-        except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError) as e:
+        except websockets.exceptions.ConnectionClosed as e:
             self._connected = False
-            print(f"\n[agent] Connection lost: {e}")
+            print(f"[agent] Connection lost: {e}")
+            return None
+        except asyncio.TimeoutError:
+            print("[agent] Request timed out (60s)")
+            return None
+        except Exception as e:
+            print(f"[agent] Error: {e}")
             return None
 
     async def close(self):
@@ -153,8 +168,11 @@ class BatchClient:
         reconnect_interval: float = 5.0,
         min_speech_ms: int = 200,
         agent_client: AgentClient | None = None,
+        agent_cooldown_ms: int = 1000,  # Pause listening after agent response (for TTS)
     ):
         self.server_url = f"{server_url}/ws/transcribe"
+        self.agent_cooldown_ms = agent_cooldown_ms
+        self._agent_cooldown_until = 0.0  # timestamp when cooldown ends
         self.sample_rate = sample_rate
         self.chunk_ms = chunk_ms
         self.silence_threshold_ms = silence_threshold_ms
@@ -277,6 +295,11 @@ class BatchClient:
                     if chunk is None:
                         continue
 
+                    # Skip processing during agent cooldown (prevents TTS feedback loop)
+                    if time.perf_counter() < self._agent_cooldown_until:
+                        state.reset()
+                        continue
+
                     speech_detected, energy = self._detect_speech(chunk)
 
                     # Handle speech onset (debounce)
@@ -315,12 +338,15 @@ class BatchClient:
                                     text = result.get("text", "").strip()
                                     self.latency_stats.record(total_ms)
                                     if text:
-                                        print(f"[you] {text}")
+                                        print(f"[transcriber] [{total_ms:.0f}ms] {text}")
                                         # Forward to agent if configured
-                                        if self.agent_client and self.agent_client.connected:
+                                        if self.agent_client:
                                             agent_response = await self.agent_client.send_transcription(text)
                                             if agent_response:
                                                 print(f"[agent] {agent_response}")
+                                                # Start cooldown to prevent TTS feedback
+                                                self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
+                                                print(f"[mic muted for {self.agent_cooldown_ms}ms]")
                         else:
                             print(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
 
@@ -358,6 +384,8 @@ class StreamingClient:
         onset_threshold: int = 3,
         reconnect_interval: float = 5.0,
         min_chunk_ms: int = 200,
+        agent_client: AgentClient | None = None,
+        agent_cooldown_ms: int = 1000,  # Pause listening after agent response (for TTS)
     ):
         self.server_url = f"{server_url}/ws/transcribe"
         self.sample_rate = sample_rate
@@ -366,12 +394,15 @@ class StreamingClient:
         self.silence_ms = silence_ms
         self.max_speech_ms = max_speech_ms
         self.min_energy = min_energy
+        self.agent_cooldown_ms = agent_cooldown_ms
+        self._agent_cooldown_until = 0.0
         self.onset_threshold = onset_threshold
         self.reconnect_interval = reconnect_interval
         self.min_chunk_ms = min_chunk_ms
 
         self.pause_chunks = int(pause_ms / chunk_ms)
         self.silence_chunks = int(silence_ms / chunk_ms)
+        self.agent_client = agent_client
 
         self.vad = create_vad()
         self.audio_capture = AudioCapture(sample_rate=sample_rate, chunk_ms=chunk_ms)
@@ -460,6 +491,7 @@ class StreamingClient:
             chunk_start_time = 0.0
             first_result_time = 0.0
             last_result_time = 0.0
+            chunk_number = 0
 
             reconnect_task = asyncio.create_task(self._reconnect_loop())
             loop = asyncio.get_event_loop()
@@ -470,6 +502,15 @@ class StreamingClient:
                         None, self.audio_capture.get_chunk, 0.1
                     )
                     if chunk is None:
+                        continue
+
+                    # Skip processing during agent cooldown (prevents TTS feedback loop)
+                    if time.perf_counter() < self._agent_cooldown_until:
+                        is_speaking = False
+                        onset_count = 0
+                        silence_count = 0
+                        audio_chunks = []
+                        utterance_transcripts = []
                         continue
 
                     speech_detected, energy = self._detect_speech(chunk)
@@ -484,6 +525,7 @@ class StreamingClient:
                                 utterance_start_time = time.perf_counter()
                                 chunk_start_time = time.perf_counter()
                                 utterance_transcripts = []
+                                chunk_number = 0
                     else:
                         onset_count = 0
                         if is_speaking:
@@ -508,8 +550,9 @@ class StreamingClient:
                                     if first_result_time == 0.0:
                                         first_result_time = now
                                     last_result_time = now
+                                    chunk_number += 1
                                     utterance_transcripts.append(text)
-                                    print(f"  [{chunk_time:.0f}ms] {text}")
+                                    print(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms] {text}")
 
                         audio_chunks = []
                         chunk_start_time = time.perf_counter()
@@ -531,8 +574,9 @@ class StreamingClient:
                                         if first_result_time == 0.0:
                                             first_result_time = now
                                         last_result_time = now
+                                        chunk_number += 1
                                         utterance_transcripts.append(text)
-                                        print(f"  [{chunk_time:.0f}ms] {text}")
+                                        print(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms] {text}")
 
                         # Print complete utterance
                         if utterance_transcripts:
@@ -541,7 +585,14 @@ class StreamingClient:
                             first_ms = (first_result_time - utterance_start_time) * 1000
                             full_text = " ".join(utterance_transcripts)
                             self.latency_stats.record(e2e_ms, first_ms)
-                            print(f">>> [first:{first_ms:.0f}ms e2e:{e2e_ms:.0f}ms] {full_text}\n")
+                            print(f"[transcriber] [complete {e2e_ms:.0f}ms] {full_text}")
+                            # Forward to agent if configured
+                            if self.agent_client:
+                                agent_response = await self.agent_client.send_transcription(full_text)
+                                if agent_response:
+                                    print(f"[agent] {agent_response}")
+                                    # Start cooldown to prevent TTS feedback
+                                    self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
 
                         # Reset state
                         is_speaking = False
@@ -563,8 +614,10 @@ class StreamingClient:
                                 if result and result.get("type") != "noise":
                                     text = result.get("text", "").strip()
                                     if text:
+                                        chunk_number += 1
+                                        chunk_time = (time.perf_counter() - chunk_start_time) * 1000
                                         utterance_transcripts.append(text)
-                                        print(f"  [max] {text}")
+                                        print(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms max] {text}")
                             audio_chunks = []
                             chunk_start_time = time.perf_counter()
 
@@ -576,6 +629,8 @@ class StreamingClient:
                     pass
                 if self._ws:
                     await self._ws.close()
+                if self.agent_client:
+                    await self.agent_client.close()
 
 
 async def main():
@@ -586,12 +641,14 @@ async def main():
     mode = os.environ.get("CLIENT_MODE", "batch")
     pause_ms = int(os.environ.get("PAUSE_MS", "400"))
     agent_url = os.environ.get("AGENT_URL", "")
+    agent_cooldown_ms = int(os.environ.get("AGENT_COOLDOWN_MS", "1000"))
 
     # Create agent client if configured
     agent_client = None
     if agent_url:
         agent_client = AgentClient(agent_url)
         await agent_client.connect()
+        print(f"[agent] Cooldown after response: {agent_cooldown_ms}ms")
 
     if mode == "streaming":
         client = StreamingClient(
@@ -600,6 +657,8 @@ async def main():
             pause_ms=pause_ms,
             silence_ms=silence_ms,
             max_speech_ms=max_speech_ms,
+            agent_client=agent_client,
+            agent_cooldown_ms=agent_cooldown_ms,
         )
     else:
         client = BatchClient(
@@ -608,6 +667,7 @@ async def main():
             silence_threshold_ms=silence_ms,
             max_speech_ms=max_speech_ms,
             agent_client=agent_client,
+            agent_cooldown_ms=agent_cooldown_ms,
         )
 
     try:

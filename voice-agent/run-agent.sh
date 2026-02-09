@@ -16,7 +16,7 @@ cd "$(dirname "$0")"
 export AGENT_PORT="${AGENT_PORT:-8766}"
 export GRAPHQL_API_URL="${GRAPHQL_API_URL:-http://localhost:5001/graphql}"
 export MCP_COMMAND="${MCP_COMMAND:-dotnet}"
-export MCP_ARGS="${MCP_ARGS:-run --project /Users/oleksandrreva/Documents/git/time-reporting-agent/claude-code-time-reporting/TimeReportingMcp/TimeReportingMcp.csproj}"
+export MCP_ARGS="${MCP_ARGS:-run --project /Users/oleksandrreva/Documents/git/time-reporting-agent/claude-code-time-reporting/TimeReportingMcpSdk/TimeReportingMcpSdk.csproj}"
 
 # Check required vars
 if [ -z "$AzureOpenAI__ApiKey" ]; then
