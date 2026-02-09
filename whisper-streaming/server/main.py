@@ -96,7 +96,7 @@ class TranscriptionSession:
         text = clean_hallucination(raw_text)
 
         if text is None:
-            logger.debug(f"Filtered hallucination: {raw_text[:50]}...")
+            logger.info(f"Filtered hallucination: {raw_text[:80]}")
             sample = raw_text[:50] + "..." if len(raw_text) > 50 else raw_text
             return {"type": "noise", "sample": sample}
 

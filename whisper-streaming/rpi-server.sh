@@ -31,9 +31,9 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     exit 0
 fi
 
-# Environment
-export WHISPER_BACKEND="${WHISPER_BACKEND:-faster}"
-export WHISPER_MODEL="${WHISPER_MODEL:-small}"
+# Environment - default to Hailo on RPi for NPU acceleration
+export WHISPER_BACKEND="${WHISPER_BACKEND:-hailo}"
+export WHISPER_MODEL="${WHISPER_MODEL:-base}"
 export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-8765}"
 

@@ -37,16 +37,16 @@ def _import_hailo():
         return
 
     try:
-        from hailo_apps.python.standalone_apps.speech_recognition.common.hailo_whisper_pipeline import (
+        from hailo_apps.python.standalone_apps.speech_recognition.app.hailo_whisper_pipeline import (
             HailoWhisperPipeline
         )
-        from hailo_apps.python.standalone_apps.speech_recognition.common.audio_utils import (
+        from hailo_apps.python.standalone_apps.speech_recognition.common.preprocessing import (
             preprocess
         )
-        from hailo_apps.python.standalone_apps.speech_recognition.common.text_utils import (
+        from hailo_apps.python.standalone_apps.speech_recognition.common.postprocessing import (
             clean_transcription
         )
-        from hailo_apps.python.standalone_apps.speech_recognition.common.hef_registry import (
+        from hailo_apps.python.standalone_apps.speech_recognition.app.whisper_hef_registry import (
             HEF_REGISTRY
         )
 
@@ -93,21 +93,15 @@ class HailoBackend(WhisperBackend):
 
         self.model_variant = variant
 
-        # Get HEF file paths from registry (downloads if needed)
-        encoder_hef = _HEF_REGISTRY.get_hef_path(
-            f"whisper_{variant}_encoder",
-            self.HW_ARCH
-        )
-        decoder_hef = _HEF_REGISTRY.get_hef_path(
-            f"whisper_{variant}_decoder",
-            self.HW_ARCH
-        )
+        # Get HEF file paths from registry
+        encoder_hef = _HEF_REGISTRY[variant][self.HW_ARCH]["encoder"]
+        decoder_hef = _HEF_REGISTRY[variant][self.HW_ARCH]["decoder"]
 
         # Initialize pipeline with encoder and decoder
         self.pipeline = _HailoWhisperPipeline(
-            encoder_hef_path=encoder_hef,
-            decoder_hef_path=decoder_hef,
-            hw_arch=self.HW_ARCH
+            encoder_model_path=encoder_hef,
+            decoder_model_path=decoder_hef,
+            variant=variant
         )
 
     def transcribe(
@@ -121,7 +115,7 @@ class HailoBackend(WhisperBackend):
         Args:
             audio: Audio samples as float32 numpy array
             sample_rate: Sample rate (will be resampled to 16kHz if needed)
-            initial_prompt: Optional prompt for context (may not be supported)
+            initial_prompt: Optional prompt for context (not supported by Hailo)
 
         Returns:
             TranscriptResult with transcription text and timing info
@@ -134,30 +128,37 @@ class HailoBackend(WhisperBackend):
         # Ensure 16kHz sample rate
         if sample_rate != 16000:
             # Simple linear interpolation resampling
-            duration = len(audio) / sample_rate
-            target_samples = int(duration * 16000)
+            audio_duration = len(audio) / sample_rate
+            target_samples = int(audio_duration * 16000)
             indices = np.linspace(0, len(audio) - 1, target_samples)
             audio = np.interp(indices, np.arange(len(audio)), audio)
 
         # Ensure float32
         audio = audio.astype(np.float32)
 
-        # Preprocess audio to mel spectrogram
-        mel_spectrogram = _preprocess(audio)
+        # Get audio input length from pipeline (typically 10 seconds)
+        chunk_length = self.pipeline.get_model_input_audio_length()
 
-        # Run inference on Hailo-10H
-        self.pipeline.send_data(mel_spectrogram)
-        raw_text = self.pipeline.get_transcription()
+        # Preprocess audio to mel spectrograms
+        # is_nhwc=True is required for Hailo pipeline
+        mel_spectrograms = _preprocess(audio, is_nhwc=True, chunk_length=chunk_length)
 
-        # Clean up transcription
-        text = _clean_transcription(raw_text)
+        # Run inference on Hailo-10H for each chunk
+        transcriptions = []
+        for mel in mel_spectrograms:
+            self.pipeline.send_data(mel)
+            raw_text = self.pipeline.get_transcription()
+            cleaned = _clean_transcription(raw_text)
+            if cleaned:
+                transcriptions.append(cleaned)
 
+        text = " ".join(transcriptions)
         processing_time_ms = (time.perf_counter() - start_time) * 1000
 
         # Hailo pipeline doesn't provide word-level timestamps
         # Return single segment covering full audio
-        duration = len(audio) / 16000
-        segments = [Segment(start=0.0, end=duration, text=text)]
+        audio_duration = len(audio) / 16000
+        segments = [Segment(start=0.0, end=audio_duration, text=text)]
 
         return TranscriptResult(
             text=text,
