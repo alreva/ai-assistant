@@ -5,12 +5,67 @@ import json
 import time
 import base64
 import asyncio
+import uuid
 import numpy as np
 import websockets
 from dataclasses import dataclass, field
 
 from .audio import AudioCapture
 from .vad import create_vad
+
+
+class AgentClient:
+    """Client for forwarding transcriptions to the voice agent."""
+
+    def __init__(self, agent_url: str):
+        self.agent_url = agent_url
+        self.session_id = str(uuid.uuid4())
+        self._ws = None
+        self._connected = False
+
+    async def connect(self) -> bool:
+        """Connect to the voice agent."""
+        try:
+            self._ws = await websockets.connect(self.agent_url, close_timeout=2)
+            self._connected = True
+            print(f"[agent] Connected to {self.agent_url}")
+            return True
+        except (OSError, websockets.exceptions.WebSocketException) as e:
+            self._connected = False
+            self._ws = None
+            print(f"[agent] Failed to connect: {e}")
+            return False
+
+    async def send_transcription(self, text: str) -> str | None:
+        """Send transcription to agent and get response."""
+        if not self._connected or self._ws is None:
+            return None
+
+        try:
+            message = json.dumps({
+                "type": "transcription",
+                "text": text,
+                "session_id": self.session_id
+            })
+            await self._ws.send(message)
+            response = await asyncio.wait_for(self._ws.recv(), timeout=60)
+            data = json.loads(response)
+            return data.get("text", "")
+        except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError) as e:
+            self._connected = False
+            print(f"\n[agent] Connection lost: {e}")
+            return None
+
+    async def close(self):
+        """Close the agent connection."""
+        if self._ws:
+            await self._ws.close()
+            self._ws = None
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
 
 
 class LatencyStats:
@@ -97,6 +152,7 @@ class BatchClient:
         onset_threshold: int = 3,
         reconnect_interval: float = 5.0,
         min_speech_ms: int = 200,
+        agent_client: AgentClient | None = None,
     ):
         self.server_url = f"{server_url}/ws/transcribe"
         self.sample_rate = sample_rate
@@ -108,6 +164,7 @@ class BatchClient:
         self.silence_chunks = int(silence_threshold_ms / chunk_ms)
         self.reconnect_interval = reconnect_interval
         self.min_speech_ms = min_speech_ms
+        self.agent_client = agent_client
 
         self.vad = create_vad()
         self.audio_capture = AudioCapture(sample_rate=sample_rate, chunk_ms=chunk_ms)
@@ -258,7 +315,12 @@ class BatchClient:
                                     text = result.get("text", "").strip()
                                     self.latency_stats.record(total_ms)
                                     if text:
-                                        print(f"[e2e:{total_ms:.0f}ms rtt:{rtt_ms:.0f}ms] {text}")
+                                        print(f"[you] {text}")
+                                        # Forward to agent if configured
+                                        if self.agent_client and self.agent_client.connected:
+                                            agent_response = await self.agent_client.send_transcription(text)
+                                            if agent_response:
+                                                print(f"[agent] {agent_response}")
                         else:
                             print(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
 
@@ -272,6 +334,8 @@ class BatchClient:
                     pass
                 if self._ws:
                     await self._ws.close()
+                if self.agent_client:
+                    await self.agent_client.close()
 
 
 class StreamingClient:
@@ -521,6 +585,13 @@ async def main():
     max_speech_ms = int(os.environ.get("MAX_SPEECH_MS", "60000"))
     mode = os.environ.get("CLIENT_MODE", "batch")
     pause_ms = int(os.environ.get("PAUSE_MS", "400"))
+    agent_url = os.environ.get("AGENT_URL", "")
+
+    # Create agent client if configured
+    agent_client = None
+    if agent_url:
+        agent_client = AgentClient(agent_url)
+        await agent_client.connect()
 
     if mode == "streaming":
         client = StreamingClient(
@@ -536,6 +607,7 @@ async def main():
             min_energy=min_energy,
             silence_threshold_ms=silence_ms,
             max_speech_ms=max_speech_ms,
+            agent_client=agent_client,
         )
 
     try:
