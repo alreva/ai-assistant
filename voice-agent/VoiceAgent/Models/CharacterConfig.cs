@@ -70,7 +70,7 @@ or 'You want me to do WHAT now? Fine fine fine, but only because I'm bored.'",
         DefaultStyle: "emo teenager",
         StyleDegree: "1.4",
         Rate: "+10%",
-        Pitch: "-5%",
+        Pitch: "+5%",
         SentencePause: "100ms",
         CommaPause: "50ms"
     );
