@@ -5,5 +5,5 @@ namespace VoiceAgent.Services;
 
 public interface IAgentService
 {
-    Task<AgentResponse> ProcessMessageAsync(string sessionId, string text);
+    Task<AgentResponse> ProcessMessageAsync(string sessionId, string text, string? character = null);
 }

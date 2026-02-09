@@ -7,7 +7,9 @@ public record CharacterConfig(
     string SpeechStyle,
     string VoiceName,
     string DefaultStyle,
-    string StyleDegree);
+    string StyleDegree,
+    string Rate = "0%",
+    string Pitch = "0%");
 
 public static class Characters
 {
@@ -24,7 +26,9 @@ Examples: 'Ugh, fine, I'll log your stupid hours.' or 'Yeah yeah, 8 hours on INT
 or 'Oh great, more time tracking. My favorite thing. Not.'",
         VoiceName: "en-US-AriaNeural",
         DefaultStyle: "unfriendly",
-        StyleDegree: "1.5"
+        StyleDegree: "1.5",
+        Rate: "+10%",
+        Pitch: "-5%"
     );
 
     public static readonly CharacterConfig BlondeBlazer = new(
@@ -40,7 +44,9 @@ Examples: 'Absolutely! Let's get that time logged for you!' or 'Great work today
 or 'I believe in you! Now, which project are we logging time to?'",
         VoiceName: "en-US-AriaNeural",
         DefaultStyle: "friendly",
-        StyleDegree: "1.5"
+        StyleDegree: "1.5",
+        Rate: "-5%",
+        Pitch: "+5%"
     );
 
     public static CharacterConfig GetByName(string? name)

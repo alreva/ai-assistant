@@ -18,9 +18,10 @@ from .tts import TtsClient
 class AgentClient:
     """Client for forwarding transcriptions to the voice agent."""
 
-    def __init__(self, agent_url: str):
+    def __init__(self, agent_url: str, character: str | None = None):
         self.agent_url = agent_url
         self.session_id = str(uuid.uuid4())
+        self.character = character
         self._ws = None
         self._connected = False
 
@@ -52,11 +53,14 @@ class AgentClient:
 
         try:
             print(f"[you -> agent] {text}")
-            message = json.dumps({
+            msg_data = {
                 "type": "transcription",
                 "text": text,
                 "session_id": self.session_id
-            })
+            }
+            if self.character:
+                msg_data["character"] = self.character
+            message = json.dumps(msg_data)
             await self._ws.send(message)
             response = await asyncio.wait_for(self._ws.recv(), timeout=60)
             data = json.loads(response)
@@ -674,14 +678,17 @@ async def main():
     pause_ms = int(os.environ.get("PAUSE_MS", "400"))
     agent_url = os.environ.get("AGENT_URL", "")
     agent_cooldown_ms = int(os.environ.get("AGENT_COOLDOWN_MS", "1000"))
+    agent_character = os.environ.get("AGENT_CHARACTER", "")
     tts_url = os.environ.get("TTS_URL", "")
     tts_voice = os.environ.get("TTS_VOICE", "en-US-JennyNeural")
 
     # Create agent client if configured
     agent_client = None
     if agent_url:
-        agent_client = AgentClient(agent_url)
+        agent_client = AgentClient(agent_url, character=agent_character or None)
         await agent_client.connect()
+        if agent_character:
+            print(f"[agent] Character: {agent_character}")
         print(f"[agent] Cooldown after response: {agent_cooldown_ms}ms")
 
     # Create TTS client if configured

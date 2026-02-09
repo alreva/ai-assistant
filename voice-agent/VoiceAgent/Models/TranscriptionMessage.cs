@@ -12,4 +12,7 @@ public class TranscriptionMessage
 
     [JsonPropertyName("session_id")]
     public string SessionId { get; set; } = string.Empty;
+
+    [JsonPropertyName("character")]
+    public string? Character { get; set; }
 }

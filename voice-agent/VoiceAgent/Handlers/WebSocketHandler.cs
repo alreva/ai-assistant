@@ -35,7 +35,7 @@ public class WebSocketHandler
                 return JsonSerializer.Serialize(new { error = "Missing text" });
             }
 
-            var response = await _agentService.ProcessMessageAsync(message.SessionId, message.Text);
+            var response = await _agentService.ProcessMessageAsync(message.SessionId, message.Text, message.Character);
             return JsonSerializer.Serialize(response);
         }
         catch (JsonException)

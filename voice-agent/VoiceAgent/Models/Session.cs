@@ -30,6 +30,7 @@ public class Session
     public DateTime? ConfirmationRequestedAt { get; set; }
     public List<ConversationMessage> ConversationHistory { get; } = new();
     public PendingToolExecution? PendingToolExecution { get; private set; }
+    public CharacterConfig? Character { get; set; }
 
     public Session(string sessionId)
     {
