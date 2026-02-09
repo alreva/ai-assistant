@@ -37,7 +37,7 @@ builder.Services.AddSingleton(new AzureOpenAIConfig
     DeploymentName = Environment.GetEnvironmentVariable("AzureOpenAI__DeploymentName") ?? "gpt-4o"
 });
 
-builder.Services.AddSingleton<IntentClassifier>();
+builder.Services.AddSingleton<ConfirmationDetector>();
 builder.Services.AddSingleton<IMcpClientService, McpClientService>();
 builder.Services.AddSingleton<IAgentService, AgentService>();
 builder.Services.AddSingleton<WebSocketHandler>();

@@ -1,17 +1,35 @@
 namespace VoiceAgent.Models;
 
+public enum ConversationRole
+{
+    User,
+    Assistant,
+    Tool
+}
+
+public record ConversationMessage(
+    ConversationRole Role,
+    string? Content,
+    string? ToolCallId = null,
+    string? ToolName = null,
+    Dictionary<string, object?>? ToolArguments = null,
+    string? ToolResult = null);
+
+public record PendingToolExecution(
+    string ToolCallId,
+    string ToolName,
+    Dictionary<string, object?> Arguments,
+    string ConfirmationPrompt);
+
 public class Session
 {
+    private const int MaxHistoryMessages = 50;
+
     public string SessionId { get; }
     public DateTime LastActivityTime { get; set; }
     public DateTime? ConfirmationRequestedAt { get; set; }
-    public string? PendingAction { get; private set; }
-    public string? PendingActionDescription { get; private set; }
-
-    // For prepared updates
-    public string? PendingToolName { get; private set; }
-    public Dictionary<string, object?>? PendingToolArguments { get; private set; }
-    public string? PendingUserQuery { get; private set; }
+    public List<ConversationMessage> ConversationHistory { get; } = new();
+    public PendingToolExecution? PendingToolExecution { get; private set; }
 
     public Session(string sessionId)
     {
@@ -30,37 +48,67 @@ public class Session
         return DateTime.UtcNow - ConfirmationRequestedAt.Value > timeout;
     }
 
-    public void SetPendingConfirmation(string action, string description)
+    public void AddUserMessage(string content)
     {
-        PendingAction = action;
-        PendingActionDescription = description;
+        ConversationHistory.Add(new ConversationMessage(ConversationRole.User, content));
+        TrimHistory();
+        TouchActivity();
+    }
+
+    public void AddAssistantMessage(string content)
+    {
+        ConversationHistory.Add(new ConversationMessage(ConversationRole.Assistant, content));
+        TrimHistory();
+        TouchActivity();
+    }
+
+    public void AddToolCall(string toolCallId, string toolName, Dictionary<string, object?> arguments)
+    {
+        ConversationHistory.Add(new ConversationMessage(
+            ConversationRole.Assistant,
+            Content: null,
+            ToolCallId: toolCallId,
+            ToolName: toolName,
+            ToolArguments: arguments));
+        TrimHistory();
+        TouchActivity();
+    }
+
+    public void AddToolResult(string toolCallId, string toolName, string result)
+    {
+        ConversationHistory.Add(new ConversationMessage(
+            ConversationRole.Tool,
+            Content: result,
+            ToolCallId: toolCallId,
+            ToolName: toolName));
+        TrimHistory();
+        TouchActivity();
+    }
+
+    public void SetPendingToolExecution(string toolCallId, string toolName, Dictionary<string, object?> arguments, string confirmationPrompt)
+    {
+        PendingToolExecution = new PendingToolExecution(toolCallId, toolName, arguments, confirmationPrompt);
         ConfirmationRequestedAt = DateTime.UtcNow;
     }
 
-    public void SetPendingUpdate(string toolName, Dictionary<string, object?> arguments, string userQuery)
+    public void ClearPendingToolExecution()
     {
-        PendingAction = "update";
-        PendingToolName = toolName;
-        PendingToolArguments = arguments;
-        PendingUserQuery = userQuery;
-        ConfirmationRequestedAt = DateTime.UtcNow;
-    }
-
-    public void ClearPendingConfirmation()
-    {
-        PendingAction = null;
-        PendingActionDescription = null;
-        PendingToolName = null;
-        PendingToolArguments = null;
-        PendingUserQuery = null;
+        PendingToolExecution = null;
         ConfirmationRequestedAt = null;
     }
 
-    public bool HasPendingConfirmation => PendingAction != null;
-    public bool HasPendingUpdate => PendingToolName != null;
+    public bool HasPendingConfirmation => PendingToolExecution != null;
 
     public void TouchActivity()
     {
         LastActivityTime = DateTime.UtcNow;
+    }
+
+    private void TrimHistory()
+    {
+        while (ConversationHistory.Count > MaxHistoryMessages)
+        {
+            ConversationHistory.RemoveAt(0);
+        }
     }
 }
