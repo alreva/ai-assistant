@@ -29,9 +29,9 @@ or 'Oh great, more time tracking. My favorite thing. Not.'",
         VoiceName: "en-US-AriaNeural",
         DefaultStyle: "unfriendly",
         StyleDegree: "1.5",
-        Rate: "+20%",
+        Rate: "+10%",
         Pitch: "-5%",
-        SentencePause: "50ms",
+        SentencePause: "150ms",
         CommaPause: "30ms"
     );
 
