@@ -6,9 +6,13 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using VoiceAgent.Handlers;
+using VoiceAgent.Models;
 using VoiceAgent.Services;
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// Character selection
+var character = Characters.GetByName(Environment.GetEnvironmentVariable("AGENT_CHARACTER"));
 
 // Configuration
 var port = int.Parse(Environment.GetEnvironmentVariable("AGENT_PORT") ?? "8766");
@@ -37,6 +41,7 @@ builder.Services.AddSingleton(new AzureOpenAIConfig
     DeploymentName = Environment.GetEnvironmentVariable("AzureOpenAI__DeploymentName") ?? "gpt-4o"
 });
 
+builder.Services.AddSingleton(character);
 builder.Services.AddSingleton<ConfirmationDetector>();
 builder.Services.AddSingleton<IMcpClientService, McpClientService>();
 builder.Services.AddSingleton<IAgentService, AgentService>();
@@ -52,7 +57,8 @@ var listener = new HttpListener();
 listener.Prefixes.Add($"http://+:{port}/");
 listener.Start();
 
-logger.LogInformation("Voice Agent WebSocket server started on port {Port}", port);
+logger.LogInformation("Voice Agent started with character: {Character}", character.Name);
+logger.LogInformation("WebSocket server listening on port {Port}", port);
 
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>

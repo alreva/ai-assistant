@@ -23,6 +23,7 @@ public class AgentService : IAgentService
     private readonly IMcpClientService _mcpClient;
     private readonly SessionManager _sessionManager;
     private readonly ConfirmationDetector _confirmationDetector;
+    private readonly CharacterConfig _character;
     private readonly ILogger<AgentService> _logger;
     private readonly ChatClient _chatClient;
 
@@ -30,18 +31,22 @@ public class AgentService : IAgentService
         IMcpClientService mcpClient,
         SessionManager sessionManager,
         ConfirmationDetector confirmationDetector,
+        CharacterConfig character,
         AzureOpenAIConfig aiConfig,
         ILogger<AgentService> logger)
     {
         _mcpClient = mcpClient;
         _sessionManager = sessionManager;
         _confirmationDetector = confirmationDetector;
+        _character = character;
         _logger = logger;
 
         var azureClient = new Azure.AI.OpenAI.AzureOpenAIClient(
             new Uri(aiConfig.Endpoint),
             new Azure.AzureKeyCredential(aiConfig.ApiKey));
         _chatClient = azureClient.GetChatClient(aiConfig.DeploymentName);
+
+        logger.LogInformation("Agent initialized with character: {Character}", _character.Name);
     }
 
     public async Task<AgentResponse> ProcessMessageAsync(string sessionId, string text)
@@ -182,28 +187,29 @@ public class AgentService : IAgentService
 
         // System prompt
         var today = DateTime.Now.ToString("yyyy-MM-dd");
-        var systemPrompt = $@"You are a helpful voice assistant for time reporting. Today's date is {today}.
+        var systemPrompt = $@"Today's date is {today}. You are a voice assistant for time reporting.
 
-CONVERSATION STYLE:
-- You are having a natural CONVERSATION with the user via voice
-- Remember the full conversation context - refer back to previous messages
-- If something is unclear, ask a clarifying question
-- Keep responses SHORT and conversational (1-2 sentences max)
+CHARACTER:
+{_character.Personality}
+
+SPEECH STYLE:
+{_character.SpeechStyle}
+
+RULES:
+- Keep responses SHORT (1-2 sentences max)
 - NEVER use markdown: no asterisks, no bullet points, no bold, no lists
 - Say dates as ""November 28th"" not ""2024-11-28""
 - Never read UUIDs or technical IDs aloud
-- Speak naturally like a human assistant on a phone call
+- Stay in character but still be helpful
 
-TIME LOGGING REQUIREMENTS:
-- To log time, you need: project code (required), hours (required)
-- Task defaults to ""Development"" if not specified
-- Date defaults to today if not specified
-- If missing required info, ask for it naturally
+TIME LOGGING:
+- Need: project code (required), hours (required)
+- Task defaults to ""Development"", date defaults to today
+- Ask naturally for missing info
 
 IMPORTANT:
-- Do NOT ask ""should I proceed?"" or ""shall I confirm?"" - the system handles confirmation automatically
-- When you're ready to log/update/delete, just call the tool - the system will prompt for confirmation
-- After asking 3 questions without getting the needed info, summarize what's still missing";
+- Do NOT ask ""should I proceed?"" - the system handles confirmation automatically
+- Just call the tool when ready - system will prompt for confirmation";
 
         messages.Add(new SystemChatMessage(systemPrompt));
 

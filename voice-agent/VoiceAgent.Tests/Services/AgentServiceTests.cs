@@ -2,7 +2,6 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
-using OpenAI.Chat;
 using VoiceAgent.Models;
 using VoiceAgent.Services;
 
@@ -18,6 +17,7 @@ public class AgentServiceTests
         var mockConfirmationDetector = new Mock<ConfirmationDetector>(
             new AzureOpenAIConfig { Endpoint = "https://test.openai.azure.com", ApiKey = "test", DeploymentName = "gpt-4o" },
             NullLogger<ConfirmationDetector>.Instance);
+        var character = Characters.Invisigal;
         var aiConfig = new AzureOpenAIConfig
         {
             Endpoint = "https://example.openai.azure.com",
@@ -29,6 +29,7 @@ public class AgentServiceTests
             mockMcpClient.Object,
             sessionManager,
             mockConfirmationDetector.Object,
+            character,
             aiConfig,
             NullLogger<AgentService>.Instance);
 

@@ -8,12 +8,16 @@
 # Usage:
 #   ./run-agent.sh                    # run in foreground
 #   ./run-agent.sh --background       # run in background
+#
+# Environment variables:
+#   AGENT_CHARACTER - invisigal (default) or blonde-blazer
 
 set -e
 cd "$(dirname "$0")"
 
 # Defaults
 export AGENT_PORT="${AGENT_PORT:-8766}"
+export AGENT_CHARACTER="${AGENT_CHARACTER:-invisigal}"
 export GRAPHQL_API_URL="${GRAPHQL_API_URL:-http://localhost:5001/graphql}"
 export MCP_COMMAND="${MCP_COMMAND:-dotnet}"
 export MCP_ARGS="${MCP_ARGS:-run --project /Users/oleksandrreva/Documents/git/time-reporting-agent/claude-code-time-reporting/TimeReportingMcpSdk/TimeReportingMcpSdk.csproj}"
@@ -30,6 +34,7 @@ if [ -z "$AzureOpenAI__ApiKey" ]; then
 fi
 
 echo "Starting Voice Agent..."
+echo "  Character: $AGENT_CHARACTER"
 echo "  Port: $AGENT_PORT"
 echo "  GraphQL: $GRAPHQL_API_URL"
 echo "  Azure OpenAI: $AzureOpenAI__Endpoint ($AzureOpenAI__DeploymentName)"
