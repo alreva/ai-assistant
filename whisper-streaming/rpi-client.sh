@@ -30,6 +30,7 @@ export MAX_SPEECH_MS="${MAX_SPEECH_MS:-60000}"
 export VAD_BACKEND="${VAD_BACKEND:-webrtc}"
 export CLIENT_MODE="${CLIENT_MODE:-batch}"
 export PAUSE_MS="${PAUSE_MS:-400}"
+export AGENT_URL="${AGENT_URL:-}"  # Optional: ws://localhost:8766
 
 echo "Starting client..."
 echo "  Server: $SERVER_URL"
@@ -40,6 +41,9 @@ if [ "$CLIENT_MODE" = "streaming" ]; then
     echo "  Pause: ${PAUSE_MS}ms"
 fi
 echo "  Max speech: ${MAX_SPEECH_MS}ms"
+if [ -n "$AGENT_URL" ]; then
+    echo "  Agent: $AGENT_URL"
+fi
 echo ""
 
 exec venv/bin/python -m client.main
