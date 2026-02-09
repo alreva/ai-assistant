@@ -76,7 +76,7 @@ class TtsClient:
                 playback_done.set()
 
         try:
-            async with websockets.connect(self.tts_url, close_timeout=1) as ws:
+            async with websockets.connect(self.tts_url, close_timeout=0.1) as ws:
                 request = json.dumps({
                     "text": text,
                     "voice": self.voice,
