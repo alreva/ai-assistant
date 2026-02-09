@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from .audio import AudioCapture
 from .vad import create_vad
+from .tts import TtsClient
 
 
 class AgentClient:
@@ -169,9 +170,11 @@ class BatchClient:
         min_speech_ms: int = 200,
         agent_client: AgentClient | None = None,
         agent_cooldown_ms: int = 1000,  # Pause listening after agent response (for TTS)
+        tts_client: TtsClient | None = None,
     ):
         self.server_url = f"{server_url}/ws/transcribe"
         self.agent_cooldown_ms = agent_cooldown_ms
+        self.tts_client = tts_client
         self._agent_cooldown_until = 0.0  # timestamp when cooldown ends
         self.sample_rate = sample_rate
         self.chunk_ms = chunk_ms
@@ -338,15 +341,28 @@ class BatchClient:
                                     text = result.get("text", "").strip()
                                     self.latency_stats.record(total_ms)
                                     if text:
-                                        print(f"[transcriber] [{total_ms:.0f}ms] {text}")
+                                        ts = time.strftime("%H:%M:%S")
+                                        print(f"[{ts}] [transcriber] [{total_ms:.0f}ms] {text}")
                                         # Forward to agent if configured
                                         if self.agent_client:
                                             agent_response = await self.agent_client.send_transcription(text)
                                             if agent_response:
-                                                print(f"[agent] {agent_response}")
-                                                # Start cooldown to prevent TTS feedback
-                                                self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
-                                                print(f"[mic muted for {self.agent_cooldown_ms}ms]")
+                                                ts = time.strftime("%H:%M:%S")
+                                                print(f"[{ts}] [agent] {agent_response}")
+                                                # Play TTS if configured
+                                                if self.tts_client:
+                                                    print(f"[{ts}] [tts] Starting playback...")
+                                                    await self.tts_client.speak(agent_response)
+                                                    ts = time.strftime("%H:%M:%S")
+                                                    print(f"[{ts}] [tts] Playback returned")
+                                                    # Small cooldown after streaming playback completes
+                                                    cooldown_s = 0.5
+                                                    self._agent_cooldown_until = time.perf_counter() + cooldown_s
+                                                    print(f"[{ts}] [listening]")
+                                                else:
+                                                    # Start cooldown to prevent TTS feedback
+                                                    self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
+                                                    print(f"[{ts}] [mic muted for {self.agent_cooldown_ms}ms]")
                         else:
                             print(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
 
@@ -386,6 +402,7 @@ class StreamingClient:
         min_chunk_ms: int = 200,
         agent_client: AgentClient | None = None,
         agent_cooldown_ms: int = 1000,  # Pause listening after agent response (for TTS)
+        tts_client: TtsClient | None = None,
     ):
         self.server_url = f"{server_url}/ws/transcribe"
         self.sample_rate = sample_rate
@@ -403,6 +420,7 @@ class StreamingClient:
         self.pause_chunks = int(pause_ms / chunk_ms)
         self.silence_chunks = int(silence_ms / chunk_ms)
         self.agent_client = agent_client
+        self.tts_client = tts_client
 
         self.vad = create_vad()
         self.audio_capture = AudioCapture(sample_rate=sample_rate, chunk_ms=chunk_ms)
@@ -591,8 +609,15 @@ class StreamingClient:
                                 agent_response = await self.agent_client.send_transcription(full_text)
                                 if agent_response:
                                     print(f"[agent] {agent_response}")
-                                    # Start cooldown to prevent TTS feedback
-                                    self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
+                                    # Play TTS if configured
+                                    if self.tts_client:
+                                        await self.tts_client.speak(agent_response)
+                                        # Small cooldown after streaming playback completes
+                                        cooldown_s = 0.5
+                                        self._agent_cooldown_until = time.perf_counter() + cooldown_s
+                                    else:
+                                        # Start cooldown to prevent TTS feedback
+                                        self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
 
                         # Reset state
                         is_speaking = False
@@ -642,6 +667,8 @@ async def main():
     pause_ms = int(os.environ.get("PAUSE_MS", "400"))
     agent_url = os.environ.get("AGENT_URL", "")
     agent_cooldown_ms = int(os.environ.get("AGENT_COOLDOWN_MS", "1000"))
+    tts_url = os.environ.get("TTS_URL", "")
+    tts_voice = os.environ.get("TTS_VOICE", "en-US-JennyNeural")
 
     # Create agent client if configured
     agent_client = None
@@ -649,6 +676,12 @@ async def main():
         agent_client = AgentClient(agent_url)
         await agent_client.connect()
         print(f"[agent] Cooldown after response: {agent_cooldown_ms}ms")
+
+    # Create TTS client if configured
+    tts_client = None
+    if tts_url:
+        tts_client = TtsClient(tts_url=tts_url, voice=tts_voice)
+        print(f"[tts] Enabled: {tts_url} (voice: {tts_voice})")
 
     if mode == "streaming":
         client = StreamingClient(
@@ -659,6 +692,7 @@ async def main():
             max_speech_ms=max_speech_ms,
             agent_client=agent_client,
             agent_cooldown_ms=agent_cooldown_ms,
+            tts_client=tts_client,
         )
     else:
         client = BatchClient(
@@ -668,6 +702,7 @@ async def main():
             max_speech_ms=max_speech_ms,
             agent_client=agent_client,
             agent_cooldown_ms=agent_cooldown_ms,
+            tts_client=tts_client,
         )
 
     try:

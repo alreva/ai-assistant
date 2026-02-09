@@ -53,7 +53,7 @@ public class WebSocketHandler
 
     private async Task HandleTextMessageAsync(WebSocket webSocket, string message, CancellationToken ct)
     {
-        _logger.LogDebug("Received: {Message}", message);
+        _logger.LogInformation("Received TTS request: {Message}", message[..Math.Min(100, message.Length)]);
 
         TtsRequest? request;
         try
@@ -61,36 +61,48 @@ public class WebSocketHandler
             request = JsonSerializer.Deserialize<TtsRequest>(message);
             if (request is null || string.IsNullOrEmpty(request.Text))
             {
+                _logger.LogWarning("Invalid request: text is required");
                 await SendErrorAsync(webSocket, "Invalid request: text is required", ct);
                 return;
             }
         }
         catch (JsonException ex)
         {
+            _logger.LogWarning("Invalid JSON: {Error}", ex.Message);
             await SendErrorAsync(webSocket, $"Invalid JSON: {ex.Message}", ct);
             return;
         }
 
         try
         {
+            _logger.LogInformation("Synthesizing: {Text}", request.Text[..Math.Min(50, request.Text.Length)]);
+            var chunkCount = 0;
             await _ttsService.SynthesizeToStreamAsync(
                 request,
                 async chunk =>
                 {
                     if (webSocket.State == WebSocketState.Open)
                     {
-                        await webSocket.SendAsync(chunk, WebSocketMessageType.Binary, false, ct);
+                        chunkCount++;
+                        // Send each chunk as a complete message (endOfMessage=true)
+                        await webSocket.SendAsync(chunk, WebSocketMessageType.Binary, true, ct);
                     }
                 },
                 ct);
 
-            // Send final empty chunk with endOfMessage=true to signal completion
+            // Send final empty chunk to signal completion
             if (webSocket.State == WebSocketState.Open)
             {
                 await webSocket.SendAsync(Array.Empty<byte>(), WebSocketMessageType.Binary, true, ct);
             }
 
-            _logger.LogDebug("Completed synthesis for text: {Text}", request.Text[..Math.Min(50, request.Text.Length)]);
+            _logger.LogInformation("Completed synthesis: {Chunks} chunks sent", chunkCount);
+
+            // Close the connection after sending audio
+            if (webSocket.State == WebSocketState.Open)
+            {
+                await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", ct);
+            }
         }
         catch (Exception ex)
         {

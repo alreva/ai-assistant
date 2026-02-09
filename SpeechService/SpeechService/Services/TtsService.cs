@@ -23,25 +23,50 @@ public class TtsService : ITtsService
 
         using var synthesizer = new SpeechSynthesizer(speechConfig, null);
 
-        synthesizer.Synthesizing += async (s, e) =>
+        var ssml = BuildSsml(request);
+        _logger.LogInformation("Calling Azure Speech API (streaming)...");
+
+        // Use a channel to properly handle async streaming
+        var channel = System.Threading.Channels.Channel.CreateUnbounded<byte[]>();
+        var totalBytes = 0;
+
+        synthesizer.Synthesizing += (s, e) =>
         {
             if (e.Result.AudioData.Length > 0)
             {
-                await onAudioChunk(e.Result.AudioData);
+                totalBytes += e.Result.AudioData.Length;
+                // Write to channel synchronously (non-blocking for unbounded)
+                channel.Writer.TryWrite(e.Result.AudioData.ToArray());
             }
         };
 
-        var ssml = BuildSsml(request);
-        _logger.LogDebug("Synthesizing SSML: {Ssml}", ssml);
+        // Start synthesis (don't await yet)
+        var synthesisTask = synthesizer.SpeakSsmlAsync(ssml);
 
-        var result = await synthesizer.SpeakSsmlAsync(ssml);
+        // Stream chunks as they arrive
+        var chunkCount = 0;
+        _ = Task.Run(async () =>
+        {
+            await synthesisTask;
+            channel.Writer.Complete();
+        }, ct);
 
+        await foreach (var chunk in channel.Reader.ReadAllAsync(ct))
+        {
+            chunkCount++;
+            await onAudioChunk(chunk);
+        }
+
+        // Check result
+        var result = await synthesisTask;
         if (result.Reason == ResultReason.Canceled)
         {
             var cancellation = SpeechSynthesisCancellationDetails.FromResult(result);
             _logger.LogError("Speech synthesis canceled: {Reason}, {Details}", cancellation.Reason, cancellation.ErrorDetails);
             throw new InvalidOperationException($"Speech synthesis failed: {cancellation.ErrorDetails}");
         }
+
+        _logger.LogInformation("Streamed {Bytes} bytes in {Chunks} chunks", totalBytes, chunkCount);
     }
 
     private static string BuildSsml(TtsRequest request)
