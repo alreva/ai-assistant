@@ -21,4 +21,7 @@ public class TtsRequest
 
     [JsonPropertyName("output_format")]
     public string OutputFormat { get; set; } = "audio-16khz-32kbitrate-mono-mp3";
+
+    [JsonPropertyName("ssml")]
+    public string? Ssml { get; set; }
 }

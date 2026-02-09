@@ -10,6 +10,9 @@ public class AgentResponse
     [JsonPropertyName("text")]
     public string Text { get; set; } = string.Empty;
 
+    [JsonPropertyName("ssml")]
+    public string? Ssml { get; set; }
+
     [JsonPropertyName("awaiting_confirmation")]
     public bool AwaitingConfirmation { get; set; }
 }

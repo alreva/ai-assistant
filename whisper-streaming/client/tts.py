@@ -28,9 +28,10 @@ class TtsClient:
         self.sample_rate = sample_rate
         self._playing = False
 
-    async def speak(self, text: str) -> float:
+    async def speak(self, text: str, ssml: str | None = None) -> float:
         """
         Send text to TTS service and stream audio playback.
+        If ssml is provided, it will be used instead of building SSML from text.
         Returns the duration of the audio in seconds.
         """
         if not text.strip():
@@ -77,11 +78,14 @@ class TtsClient:
 
         try:
             async with websockets.connect(self.tts_url, close_timeout=0.1) as ws:
-                request = json.dumps({
+                request_data = {
                     "text": text,
                     "voice": self.voice,
                     "output_format": "raw-24khz-16bit-mono-pcm"
-                })
+                }
+                if ssml:
+                    request_data["ssml"] = ssml
+                request = json.dumps(request_data)
                 await ws.send(request)
 
                 # Start playback thread

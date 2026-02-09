@@ -44,8 +44,8 @@ class AgentClient:
             return True
         return await self.connect(silent=True)
 
-    async def send_transcription(self, text: str) -> str | None:
-        """Send transcription to agent and get response."""
+    async def send_transcription(self, text: str) -> dict | None:
+        """Send transcription to agent and get response with text and ssml."""
         # Try to reconnect if disconnected
         if not await self.ensure_connected():
             return None
@@ -60,7 +60,10 @@ class AgentClient:
             await self._ws.send(message)
             response = await asyncio.wait_for(self._ws.recv(), timeout=60)
             data = json.loads(response)
-            return data.get("text", "")
+            return {
+                "text": data.get("text", ""),
+                "ssml": data.get("ssml")
+            }
         except websockets.exceptions.ConnectionClosed as e:
             self._connected = False
             print(f"[agent] Connection lost: {e}")
@@ -348,11 +351,13 @@ class BatchClient:
                                             agent_response = await self.agent_client.send_transcription(text)
                                             if agent_response:
                                                 ts = time.strftime("%H:%M:%S")
-                                                print(f"[{ts}] [agent] {agent_response}")
+                                                agent_text = agent_response.get("text", "")
+                                                agent_ssml = agent_response.get("ssml")
+                                                print(f"[{ts}] [agent] {agent_text}")
                                                 # Play TTS if configured
                                                 if self.tts_client:
                                                     print(f"[{ts}] [tts] Starting playback...")
-                                                    await self.tts_client.speak(agent_response)
+                                                    await self.tts_client.speak(agent_text, ssml=agent_ssml)
                                                     ts = time.strftime("%H:%M:%S")
                                                     print(f"[{ts}] [tts] Playback returned")
                                                     # Small cooldown after streaming playback completes
@@ -608,10 +613,12 @@ class StreamingClient:
                             if self.agent_client:
                                 agent_response = await self.agent_client.send_transcription(full_text)
                                 if agent_response:
-                                    print(f"[agent] {agent_response}")
+                                    agent_text = agent_response.get("text", "")
+                                    agent_ssml = agent_response.get("ssml")
+                                    print(f"[agent] {agent_text}")
                                     # Play TTS if configured
                                     if self.tts_client:
-                                        await self.tts_client.speak(agent_response)
+                                        await self.tts_client.speak(agent_text, ssml=agent_ssml)
                                         # Small cooldown after streaming playback completes
                                         cooldown_s = 0.5
                                         self._agent_cooldown_until = time.perf_counter() + cooldown_s

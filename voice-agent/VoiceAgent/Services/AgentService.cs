@@ -76,8 +76,9 @@ public class AgentService : IAgentService
             {
                 session.ClearPendingToolExecution();
                 session.AddUserMessage(text);
-                session.AddAssistantMessage("Cancelled. No changes made.");
-                return new AgentResponse { Text = "Cancelled. No changes made.", AwaitingConfirmation = false };
+                var cancelText = "Cancelled. No changes made.";
+                session.AddAssistantMessage(cancelText);
+                return new AgentResponse { Text = cancelText, Ssml = GenerateSsml(cancelText), AwaitingConfirmation = false };
             }
 
             // Modification requested - clear pending and let agent handle with context
@@ -111,7 +112,7 @@ public class AgentService : IAgentService
         session.AddAssistantMessage(ttsResponse);
 
         _logger.LogInformation("<<< Agent response: {Text}", ttsResponse);
-        return new AgentResponse { Text = ttsResponse, AwaitingConfirmation = false };
+        return new AgentResponse { Text = ttsResponse, Ssml = GenerateSsml(ttsResponse), AwaitingConfirmation = false };
     }
 
     private async Task<AgentResponse> RunAgentLoopAsync(Session session)
@@ -152,7 +153,7 @@ public class AgentService : IAgentService
                     session.AddAssistantMessage(confirmationPrompt);
 
                     _logger.LogInformation("<<< Agent response (awaiting confirmation): {Text}", confirmationPrompt);
-                    return new AgentResponse { Text = confirmationPrompt, AwaitingConfirmation = true };
+                    return new AgentResponse { Text = confirmationPrompt, Ssml = GenerateSsml(confirmationPrompt), AwaitingConfirmation = true };
                 }
 
                 // Non-destructive tool - execute immediately
@@ -171,14 +172,14 @@ public class AgentService : IAgentService
             session.AddAssistantMessage(responseText);
 
             _logger.LogInformation("<<< Agent response: {Text}", responseText);
-            return new AgentResponse { Text = responseText, AwaitingConfirmation = false };
+            return new AgentResponse { Text = responseText, Ssml = GenerateSsml(responseText), AwaitingConfirmation = false };
         }
 
         // Safety limit reached
         var fallbackMessage = "I've processed several operations. Is there anything else you'd like me to do?";
         session.AddAssistantMessage(fallbackMessage);
         _logger.LogWarning("Max tool calls reached for session {SessionId}", session.SessionId);
-        return new AgentResponse { Text = fallbackMessage, AwaitingConfirmation = false };
+        return new AgentResponse { Text = fallbackMessage, Ssml = GenerateSsml(fallbackMessage), AwaitingConfirmation = false };
     }
 
     private List<ChatMessage> BuildChatMessages(Session session)
@@ -327,5 +328,25 @@ IMPORTANT:
     {
         var newProject = args.GetValueOrDefault("newProjectCode")?.ToString() ?? "the new project";
         return $"I'll move this entry to {newProject}. Say yes to confirm or no to cancel.";
+    }
+
+    private string GenerateSsml(string text)
+    {
+        // Escape XML special characters
+        var escapedText = System.Security.SecurityElement.Escape(text) ?? string.Empty;
+        var voice = _character.VoiceName;
+        var style = _character.DefaultStyle;
+        var degree = _character.StyleDegree;
+        var lang = voice.Length >= 5 ? voice[..5] : "en-US";
+
+        return $"""
+            <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="{lang}">
+              <voice name="{voice}">
+                <mstts:express-as style="{style}" styledegree="{degree}">
+                  {escapedText}
+                </mstts:express-as>
+              </voice>
+            </speak>
+            """;
     }
 }

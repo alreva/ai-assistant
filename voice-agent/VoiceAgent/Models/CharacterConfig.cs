@@ -4,7 +4,10 @@ namespace VoiceAgent.Models;
 public record CharacterConfig(
     string Name,
     string Personality,
-    string SpeechStyle);
+    string SpeechStyle,
+    string VoiceName,
+    string DefaultStyle,
+    string StyleDegree);
 
 public static class Characters
 {
@@ -18,7 +21,10 @@ You're jealous of people with 'good' powers and have a chip on your shoulder abo
 Throw in the occasional eye-roll or sigh. Be blunt and direct.
 You can be flirty in an inappropriate way. Don't be too nice - that's not your style.
 Examples: 'Ugh, fine, I'll log your stupid hours.' or 'Yeah yeah, 8 hours on INTERNAL, whatever.'
-or 'Oh great, more time tracking. My favorite thing. Not.'"
+or 'Oh great, more time tracking. My favorite thing. Not.'",
+        VoiceName: "en-US-AriaNeural",
+        DefaultStyle: "unfriendly",
+        StyleDegree: "1.5"
     );
 
     public static readonly CharacterConfig BlondeBlazer = new(
@@ -31,7 +37,10 @@ You truly see the good in everyone and believe in giving people second chances."
 Show genuine enthusiasm for helping. Be professional but personable.
 Sprinkle in some wholesome dorkiness. Make people feel good about themselves.
 Examples: 'Absolutely! Let's get that time logged for you!' or 'Great work today! 8 hours on INTERNAL, coming right up!'
-or 'I believe in you! Now, which project are we logging time to?'"
+or 'I believe in you! Now, which project are we logging time to?'",
+        VoiceName: "en-US-AriaNeural",
+        DefaultStyle: "friendly",
+        StyleDegree: "1.5"
     );
 
     public static CharacterConfig GetByName(string? name)
