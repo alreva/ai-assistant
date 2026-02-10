@@ -1,0 +1,14 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "TableStorageConnection": "UseDevelopmentStorage=true",
+    "AzureAd__TenantId": "<your-tenant-id>",
+    "AzureAd__ClientId": "<your-client-id>",
+    "AzureAd__ClientSecret": "<your-client-secret>",
+    "AzureAd__Scope": "api://<your-api-app-id>/.default offline_access",
+    "BaseUrl": "http://localhost:7071",
+    "EncryptionKey": "<32-byte-base64-key>"
+  }
+}
