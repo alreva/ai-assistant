@@ -28,9 +28,13 @@ from opentelemetry import trace
 # Conditional telemetry setup
 _connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
 if _connection_string:
-    os.environ.setdefault("OTEL_SERVICE_NAME", "client")
-    from azure.monitor.opentelemetry import configure_azure_monitor
-    configure_azure_monitor(connection_string=_connection_string)
+    try:
+        os.environ.setdefault("OTEL_SERVICE_NAME", "client")
+        from azure.monitor.opentelemetry import configure_azure_monitor
+        configure_azure_monitor(connection_string=_connection_string)
+    except Exception as _e:
+        logger.warning(f"Azure Monitor telemetry unavailable: {_e}")
+        logger.warning("Continuing without telemetry export")
 
 tracer = trace.get_tracer("client")
 
