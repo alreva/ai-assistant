@@ -14,7 +14,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-COMPOSE="podman-compose -f podman-compose.yml -f podman-compose.rpi.yml"
+COMPOSE="podman compose -f podman-compose.yml -f podman-compose.rpi.yml"
 
 # Check for TimeReportingMcpSdk symlink (required for agent build)
 if [ ! -d "TimeReportingMcpSdk" ]; then

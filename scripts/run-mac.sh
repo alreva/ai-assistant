@@ -20,10 +20,12 @@ if [ ! -d "TimeReportingMcpSdk" ]; then
     ln -s /Users/oleksandrreva/Documents/git/time-reporting-agent/claude-code-time-reporting/TimeReportingMcpSdk TimeReportingMcpSdk
 fi
 
+COMPOSE="podman compose -f podman-compose.yml"
+
 case "${1:-up}" in
     up)
         echo "Starting services (stt-server, agent, tts)..."
-        podman-compose up -d
+        $COMPOSE up -d
         echo ""
         echo "Services started. Run native client with:"
         echo "  ./whisper-streaming/rpi-client.sh"
@@ -32,22 +34,22 @@ case "${1:-up}" in
         ;;
     down)
         echo "Stopping services..."
-        podman-compose down
+        $COMPOSE down
         ;;
     logs)
         shift
-        podman-compose logs -f ${1:-}
+        $COMPOSE logs -f ${1:-}
         ;;
     build)
         echo "Building images..."
-        podman-compose build
+        $COMPOSE build
         ;;
     ps)
-        podman-compose ps
+        $COMPOSE ps
         ;;
     restart)
         echo "Restarting services..."
-        podman-compose restart
+        $COMPOSE restart
         ;;
     *)
         echo "Usage: $0 {up|down|logs|build|ps|restart}"
