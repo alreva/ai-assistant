@@ -10,7 +10,18 @@ import numpy as np
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
+from opentelemetry import trace
+
 from .backends import create_backend
+
+# Conditional telemetry setup
+_connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
+if _connection_string:
+    os.environ.setdefault("OTEL_SERVICE_NAME", "stt-server")
+    from azure.monitor.opentelemetry import configure_azure_monitor
+    configure_azure_monitor(connection_string=_connection_string)
+
+tracer = trace.get_tracer("stt-server")
 
 # Configure logging
 logging.basicConfig(
@@ -135,38 +146,73 @@ def create_app():
 
         try:
             async for raw_message in websocket:
-                message = json.loads(raw_message)
+                try:
+                    message = json.loads(raw_message)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON: {e}")
+                    continue
+
                 msg_type = message.get("type")
+                traceparent_str = message.get("traceparent")
+                session_id = message.get("session_id")
+
+                # Extract parent context from traceparent
+                parent_context = None
+                if traceparent_str:
+                    from opentelemetry.trace.propagation import TraceContextTextMapPropagator
+                    propagator = TraceContextTextMapPropagator()
+                    parent_context = propagator.extract({"traceparent": traceparent_str})
 
                 if msg_type == "transcribe":
-                    # Receive complete audio batch
-                    audio_b64 = message.get("audio", "")
-                    sample_rate = message.get("sample_rate", 16000)
-                    audio_bytes = base64.b64decode(audio_b64)
-                    audio = np.frombuffer(audio_bytes, dtype=np.float32)
+                    with tracer.start_as_current_span(
+                        "stt-transcribe",
+                        context=parent_context,
+                        kind=trace.SpanKind.SERVER,
+                    ) as span:
+                        if session_id:
+                            span.set_attribute("session.id", session_id)
 
-                    duration_ms = len(audio) / sample_rate * 1000
-                    logger.info(f"Transcribing {duration_ms:.0f}ms audio")
+                        audio_b64 = message.get("audio", "")
+                        sample_rate = message.get("sample_rate", 16000)
+                        audio_bytes = base64.b64decode(audio_b64)
+                        audio = np.frombuffer(audio_bytes, dtype=np.float32)
 
-                    session.sample_rate = sample_rate
-                    result = await loop.run_in_executor(None, session.transcribe, audio)
+                        duration_ms = len(audio) / sample_rate * 1000
+                        span.set_attribute("audio.duration_ms", duration_ms)
+                        span.set_attribute("audio.sample_rate", sample_rate)
 
-                    if result["type"] == "noise":
-                        logger.info("Detected noise/hallucination")
-                    else:
-                        logger.info(f"Result ({result['processing_time_ms']:.0f}ms): {result['text'][:80]}...")
-                    try:
-                        await websocket.send(json.dumps(result))
-                    except ConnectionClosed:
-                        break
+                        logger.info(f"Transcribing {duration_ms:.0f}ms audio")
+
+                        session.sample_rate = sample_rate
+                        result = await loop.run_in_executor(None, session.transcribe, audio)
+
+                        if result["type"] == "noise":
+                            span.set_attribute("result.type", "noise")
+                            span.add_event("hallucination-filtered")
+                            logger.info("Detected noise/hallucination")
+                        else:
+                            span.set_attribute("result.type", "result")
+                            span.set_attribute("result.text", result["text"][:200])
+                            span.set_attribute("result.language", result.get("language", ""))
+                            span.set_attribute("result.processing_time_ms", result.get("processing_time_ms", 0))
+                            logger.info(f"Result ({result['processing_time_ms']:.0f}ms): {result['text'][:80]}...")
+
+                        # Include traceparent in response
+                        current_span = trace.get_current_span()
+                        ctx = current_span.get_span_context()
+                        if ctx.is_valid:
+                            result["traceparent"] = f"00-{format(ctx.trace_id, '032x')}-{format(ctx.span_id, '016x')}-01"
+
+                        try:
+                            await websocket.send(json.dumps(result))
+                        except ConnectionClosed:
+                            break
 
                 else:
                     logger.warning(f"Unknown message type: {msg_type}")
 
         except ConnectionClosed:
             pass
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON: {e}")
         finally:
             logger.info(f"Client disconnected: {client_addr}")
 
