@@ -50,11 +50,13 @@ FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 
 # Install Azure Speech SDK dependencies
 # The SDK requires OpenSSL, ALSA (audio), and other native libraries
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libasound2 \
-    libssl3 \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Install Azure Speech SDK dependencies
+# libasound2t64 is the new name in Debian trixie/sid, fallback to libasound2 for older
+RUN apt-get update && \
+    (apt-get install -y --no-install-recommends libasound2t64 || \
+     apt-get install -y --no-install-recommends libasound2) && \
+    apt-get install -y --no-install-recommends libssl3 ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash tts
