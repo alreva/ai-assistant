@@ -1,0 +1,61 @@
+# Raspberry Pi override for podman-compose.yml
+# Adds: client container, Hailo NPU for STT, audio passthrough
+#
+# Usage:
+#   podman-compose -f podman-compose.yml -f podman-compose.rpi.yml up
+#
+# Or use the wrapper script:
+#   ./scripts/run-rpi.sh up
+
+version: "3.8"
+
+services:
+  # ==========================================================================
+  # Client - Audio capture/playback (RPi only)
+  # ==========================================================================
+  client:
+    build:
+      context: .
+      dockerfile: docker/client.Dockerfile
+    container_name: ai-assistant-client
+    depends_on:
+      - stt-server
+      - agent
+      - tts
+    environment:
+      - SERVER_URL=ws://stt-server:8765
+      - AGENT_URL=ws://agent:8766
+      - TTS_URL=ws://tts:8767
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+    # Audio device passthrough
+    devices:
+      - /dev/snd:/dev/snd
+    volumes:
+      # PulseAudio socket for audio playback
+      - /run/user/1000/pulse:/run/user/1000/pulse
+    group_add:
+      - audio
+    restart: unless-stopped
+
+  # ==========================================================================
+  # STT Server - Override to use Hailo NPU
+  # ==========================================================================
+  stt-server:
+    build:
+      context: .
+      dockerfile: docker/stt-server-hailo.Dockerfile
+    environment:
+      - WHISPER_BACKEND=hailo
+      - WHISPER_MODEL=base
+    # Hailo NPU device
+    devices:
+      - /dev/hailo0:/dev/hailo0
+    # Mount Hailo SDK packages from host (installed via apt)
+    volumes:
+      # Python bindings
+      - /usr/lib/python3/dist-packages/hailo_platform:/usr/lib/python3/dist-packages/hailo_platform:ro
+      - /usr/lib/python3/dist-packages/hailo.cpython-313-aarch64-linux-gnu.so:/usr/lib/python3/dist-packages/hailo.cpython-313-aarch64-linux-gnu.so:ro
+      - /usr/lib/python3/dist-packages/hailort-5.1.1.egg-info:/usr/lib/python3/dist-packages/hailort-5.1.1.egg-info:ro
+      # Native libraries
+      - /usr/lib/libhailort.so:/usr/lib/libhailort.so:ro
+      - /usr/lib/libhailort.so.5.1.1:/usr/lib/libhailort.so.5.1.1:ro
