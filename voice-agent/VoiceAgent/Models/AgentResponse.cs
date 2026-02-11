@@ -15,4 +15,7 @@ public class AgentResponse
 
     [JsonPropertyName("awaiting_confirmation")]
     public bool AwaitingConfirmation { get; set; }
+
+    [JsonPropertyName("traceparent")]
+    public string? Traceparent { get; set; }
 }

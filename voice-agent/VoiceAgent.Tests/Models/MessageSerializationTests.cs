@@ -46,4 +46,53 @@ public class MessageSerializationTests
         json.Should().Contain("\"text\":\"I'll log 8 hours. Confirm?\"");
         json.Should().Contain("\"awaiting_confirmation\":true");
     }
+
+    [Fact]
+    public void TranscriptionMessage_DeserializesTraceparent()
+    {
+        var json = """
+            {
+                "type": "transcription",
+                "text": "Log 8 hours on INTERNAL",
+                "session_id": "abc-123",
+                "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+            }
+            """;
+
+        var message = JsonSerializer.Deserialize<TranscriptionMessage>(json);
+
+        message.Should().NotBeNull();
+        message!.Traceparent.Should().Be("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+    }
+
+    [Fact]
+    public void TranscriptionMessage_TraceparentIsOptional()
+    {
+        var json = """
+            {
+                "type": "transcription",
+                "text": "hello",
+                "session_id": "abc-123"
+            }
+            """;
+
+        var message = JsonSerializer.Deserialize<TranscriptionMessage>(json);
+
+        message.Should().NotBeNull();
+        message!.Traceparent.Should().BeNull();
+    }
+
+    [Fact]
+    public void AgentResponse_IncludesTraceparent()
+    {
+        var response = new AgentResponse
+        {
+            Text = "Done!",
+            Traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        };
+
+        var json = JsonSerializer.Serialize(response);
+
+        json.Should().Contain("\"traceparent\"");
+    }
 }

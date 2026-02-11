@@ -15,4 +15,7 @@ public class TranscriptionMessage
 
     [JsonPropertyName("character")]
     public string? Character { get; set; }
+
+    [JsonPropertyName("traceparent")]
+    public string? Traceparent { get; set; }
 }
