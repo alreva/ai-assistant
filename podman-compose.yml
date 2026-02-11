@@ -1,0 +1,97 @@
+# Voice Assistant - Mac Development Compose File
+# ==============================================
+#
+# This file defines 3 services for Mac development:
+#   - stt-server: Speech-to-text using Whisper (faster-whisper backend)
+#   - agent: Voice agent with MCP integration (.NET)
+#   - tts: Text-to-speech using Azure Speech (.NET)
+#
+# The client runs natively on Mac (audio passthrough issues with Podman VM).
+#
+# Usage:
+#   podman-compose build                  # Build all images
+#   podman-compose up -d                  # Start services in background
+#   podman-compose logs -f [service]      # View logs
+#   podman-compose down                   # Stop and remove containers
+#
+# Prerequisites:
+#   1. Copy .env.sample to .env and configure Azure credentials
+#   2. For agent build: Symlink TimeReportingMcpSdk (see AGENT BUILD CONTEXT below)
+#
+# AGENT BUILD CONTEXT
+# -------------------
+# The agent service requires TimeReportingMcpSdk from an external repository.
+# Before building, create a symlink in the project root:
+#
+#   ln -s /Users/oleksandrreva/Documents/git/time-reporting-agent/claude-code-time-reporting/TimeReportingMcpSdk TimeReportingMcpSdk
+#
+# Or copy the directory:
+#   cp -r /Users/oleksandrreva/Documents/git/time-reporting-agent/claude-code-time-reporting/TimeReportingMcpSdk TimeReportingMcpSdk
+#
+# The agent Dockerfile expects this structure:
+#   ai-assistant/
+#   ├── voice-agent/VoiceAgent/
+#   └── TimeReportingMcpSdk/
+#
+# ==============================================
+
+version: "3.8"
+
+services:
+  # --------------------------------------------------------------------------
+  # STT Server - Speech-to-Text using Whisper
+  # --------------------------------------------------------------------------
+  # Converts audio to text using faster-whisper backend.
+  # Listens on WebSocket port 8765 for audio streams.
+  stt-server:
+    build:
+      context: .
+      dockerfile: docker/stt-server.Dockerfile
+    container_name: ai-assistant-stt
+    ports:
+      - "8765:8765"
+    environment:
+      - WHISPER_BACKEND=faster-whisper
+      - WHISPER_MODEL=base
+      - HOST=0.0.0.0
+      - PORT=8765
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Agent - Voice Agent with MCP Integration
+  # --------------------------------------------------------------------------
+  # .NET 10 application that processes voice commands.
+  # Integrates with Azure OpenAI and Time Reporting MCP SDK.
+  # Requires external TimeReportingMcpSdk - see AGENT BUILD CONTEXT above.
+  agent:
+    build:
+      context: .
+      dockerfile: docker/agent.Dockerfile
+    container_name: ai-assistant-agent
+    ports:
+      - "8766:8766"
+    env_file: .env
+    environment:
+      - AGENT_PORT=8766
+    depends_on:
+      - stt-server
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # TTS - Text-to-Speech using Azure Speech
+  # --------------------------------------------------------------------------
+  # .NET 10 application that converts text to speech using Azure Speech SDK.
+  # Returns audio streams over WebSocket on port 8767.
+  tts:
+    build:
+      context: .
+      dockerfile: docker/tts.Dockerfile
+    container_name: ai-assistant-tts
+    ports:
+      - "8767:8767"
+    env_file: .env
+    environment:
+      - SPEECH_PORT=8767
+    depends_on:
+      - agent
+    restart: unless-stopped
