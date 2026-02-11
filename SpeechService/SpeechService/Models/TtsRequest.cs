@@ -24,4 +24,10 @@ public class TtsRequest
 
     [JsonPropertyName("ssml")]
     public string? Ssml { get; set; }
+
+    [JsonPropertyName("traceparent")]
+    public string? Traceparent { get; set; }
+
+    [JsonPropertyName("session_id")]
+    public string? SessionId { get; set; }
 }

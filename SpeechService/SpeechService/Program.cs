@@ -3,6 +3,10 @@ using System.Net.WebSockets;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using OpenTelemetry;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using Azure.Monitor.OpenTelemetry.Exporter;
 using SpeechService.Handlers;
 using SpeechService.Services;
 
@@ -20,6 +24,19 @@ builder.Services.AddSingleton(new AzureSpeechConfig
 
 builder.Services.AddSingleton<ITtsService, TtsService>();
 builder.Services.AddSingleton<WebSocketHandler>();
+
+// OpenTelemetry
+var connectionString = Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING");
+if (!string.IsNullOrEmpty(connectionString))
+{
+    builder.Services.AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService("speech-service"))
+        .WithTracing(t =>
+        {
+            t.AddSource("SpeechService");
+            t.AddAzureMonitorTraceExporter(o => o.ConnectionString = connectionString);
+        });
+}
 
 var app = builder.Build();
 

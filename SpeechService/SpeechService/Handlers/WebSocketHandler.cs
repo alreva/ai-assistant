@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -9,6 +10,7 @@ namespace SpeechService.Handlers;
 
 public class WebSocketHandler
 {
+    private static readonly ActivitySource ActivitySource = new("SpeechService");
     private readonly ITtsService _ttsService;
     private readonly ILogger<WebSocketHandler> _logger;
 
@@ -73,6 +75,22 @@ public class WebSocketHandler
             return;
         }
 
+        // Extract parent trace context
+        ActivityContext parentContext = default;
+        if (!string.IsNullOrEmpty(request.Traceparent))
+        {
+            ActivityContext.TryParse(request.Traceparent, null, out parentContext);
+        }
+
+        using var activity = ActivitySource.StartActivity(
+            "tts-synthesize",
+            ActivityKind.Server,
+            parentContext);
+
+        activity?.SetTag("session.id", request.SessionId);
+        activity?.SetTag("tts.text_length", request.Text.Length);
+        activity?.SetTag("tts.voice", request.Voice);
+
         try
         {
             _logger.LogInformation("Synthesizing: {Text}", request.Text[..Math.Min(50, request.Text.Length)]);
@@ -97,6 +115,7 @@ public class WebSocketHandler
             }
 
             _logger.LogInformation("Completed synthesis: {Chunks} chunks sent", chunkCount);
+            activity?.SetTag("tts.chunk_count", chunkCount);
 
             // Close the connection after sending audio
             if (webSocket.State == WebSocketState.Open)
@@ -106,6 +125,7 @@ public class WebSocketHandler
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             _logger.LogError(ex, "Synthesis failed");
             await SendErrorAsync(webSocket, $"Synthesis failed: {ex.Message}", ct);
         }
