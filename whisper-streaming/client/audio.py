@@ -1,7 +1,10 @@
 # client/audio.py
 import queue
+import logging
 import numpy as np
 import sounddevice as sd
+
+logger = logging.getLogger("client.audio")
 
 
 class AudioCapture:
@@ -15,7 +18,7 @@ class AudioCapture:
     def _callback(self, indata, frames, time, status):
         """Called by sounddevice for each audio chunk."""
         if status:
-            print(f"Audio status: {status}")
+            logger.warning(f"Audio status: {status}")
         self.audio_queue.put(indata.copy())
 
     def start(self):

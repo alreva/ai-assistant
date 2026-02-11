@@ -14,6 +14,15 @@ from .audio import AudioCapture
 from .vad import create_vad
 from .tts import TtsClient
 
+import logging
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger("client")
+
 
 class AgentClient:
     """Client for forwarding transcriptions to the voice agent."""
@@ -30,13 +39,13 @@ class AgentClient:
         try:
             self._ws = await websockets.connect(self.agent_url, close_timeout=2)
             self._connected = True
-            print(f"[agent] Connected to {self.agent_url}")
+            logger.info(f"[agent] Connected to {self.agent_url}")
             return True
         except (OSError, websockets.exceptions.WebSocketException) as e:
             self._connected = False
             self._ws = None
             if not silent:
-                print(f"[agent] Not available: {e}")
+                logger.warning(f"[agent] Not available: {e}")
             return False
 
     async def ensure_connected(self) -> bool:
@@ -52,7 +61,7 @@ class AgentClient:
             return None
 
         try:
-            print(f"[you -> agent] {text}")
+            logger.info(f"[you -> agent] {text}")
             msg_data = {
                 "type": "transcription",
                 "text": text,
@@ -70,13 +79,13 @@ class AgentClient:
             }
         except websockets.exceptions.ConnectionClosed as e:
             self._connected = False
-            print(f"[agent] Connection lost: {e}")
+            logger.warning(f"[agent] Connection lost: {e}")
             return None
         except asyncio.TimeoutError:
-            print("[agent] Request timed out (60s)")
+            logger.warning("[agent] Request timed out (60s)")
             return None
         except Exception as e:
-            print(f"[agent] Error: {e}")
+            logger.error(f"[agent] Error: {e}")
             return None
 
     async def close(self):
@@ -243,7 +252,7 @@ class BatchClient:
                 close_timeout=2
             )
             self._connected = True
-            print("[connected] Server connected")
+            logger.info("[connected] Server connected")
             return True
         except (OSError, websockets.exceptions.WebSocketException):
             self._connected = False
@@ -264,7 +273,7 @@ class BatchClient:
             return json.loads(response), rtt_ms
         except websockets.exceptions.ConnectionClosed:
             self._connected = False
-            print("\n[disconnected] Server connection lost")
+            logger.warning("[disconnected] Server connection lost")
             return None, 0
 
     async def _reconnect_loop(self):
@@ -279,16 +288,16 @@ class BatchClient:
 
     async def run(self):
         """Main client loop."""
-        print(f"Server: {self.server_url}")
-        print(f"VAD: {os.environ.get('VAD_BACKEND', 'webrtc')}")
-        print(f"Min energy: {self.min_energy}")
-        print(f"Silence: {self.silence_threshold_ms}ms | Max speech: {self.max_speech_ms}ms")
-        print("Press Ctrl+C to stop\n")
+        logger.info(f"Server: {self.server_url}")
+        logger.info(f"VAD: {os.environ.get('VAD_BACKEND', 'webrtc')}")
+        logger.info(f"Min energy: {self.min_energy}")
+        logger.info(f"Silence: {self.silence_threshold_ms}ms | Max speech: {self.max_speech_ms}ms")
+        logger.info("Press Ctrl+C to stop")
 
         # Try initial connection
         if not await self._connect():
-            print(f"[offline] Server not available, will retry every {self.reconnect_interval}s")
-            print("[offline] Audio capture active, speech detection running\n")
+            logger.warning(f"[offline] Server not available, will retry every {self.reconnect_interval}s")
+            logger.warning("[offline] Audio capture active, speech detection running")
 
         with self.audio_capture:
             state = SpeechState()
@@ -343,37 +352,34 @@ class BatchClient:
                                 total_ms = (time.perf_counter() - state.speech_start_time) * 1000
                                 if result.get("type") == "noise":
                                     sample = result.get("sample", "")
-                                    print(f"[noise] {sample}")
+                                    logger.debug(f"[noise] {sample}")
                                 else:
                                     text = result.get("text", "").strip()
                                     self.latency_stats.record(total_ms)
                                     if text:
-                                        ts = time.strftime("%H:%M:%S")
-                                        print(f"[{ts}] [transcriber] [{total_ms:.0f}ms] {text}")
+                                        logger.info(f"[transcriber] [{total_ms:.0f}ms] {text}")
                                         # Forward to agent if configured
                                         if self.agent_client:
                                             agent_response = await self.agent_client.send_transcription(text)
                                             if agent_response:
-                                                ts = time.strftime("%H:%M:%S")
                                                 agent_text = agent_response.get("text", "")
                                                 agent_ssml = agent_response.get("ssml")
-                                                print(f"[{ts}] [agent] {agent_text}")
+                                                logger.info(f"[agent] {agent_text}")
                                                 # Play TTS if configured
                                                 if self.tts_client:
-                                                    print(f"[{ts}] [tts] Starting playback...")
+                                                    logger.info("[tts] Starting playback...")
                                                     await self.tts_client.speak(agent_text, ssml=agent_ssml)
-                                                    ts = time.strftime("%H:%M:%S")
-                                                    print(f"[{ts}] [tts] Playback returned")
+                                                    logger.info("[tts] Playback returned")
                                                     # Small cooldown after streaming playback completes
                                                     cooldown_s = 0.5
                                                     self._agent_cooldown_until = time.perf_counter() + cooldown_s
-                                                    print(f"[{ts}] [listening]")
+                                                    logger.info("[listening]")
                                                 else:
                                                     # Start cooldown to prevent TTS feedback
                                                     self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
-                                                    print(f"[{ts}] [mic muted for {self.agent_cooldown_ms}ms]")
+                                                    logger.info(f"[mic muted for {self.agent_cooldown_ms}ms]")
                         else:
-                            print(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
+                            logger.warning(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
 
                         state.reset()
 
@@ -463,7 +469,7 @@ class StreamingClient:
                 close_timeout=2
             )
             self._connected = True
-            print("[connected] Server connected")
+            logger.info("[connected] Server connected")
             return True
         except (OSError, websockets.exceptions.WebSocketException):
             self._connected = False
@@ -484,7 +490,7 @@ class StreamingClient:
             return json.loads(response), rtt_ms
         except websockets.exceptions.ConnectionClosed:
             self._connected = False
-            print("\n[disconnected] Server connection lost")
+            logger.warning("[disconnected] Server connection lost")
             return None, 0
 
     async def _reconnect_loop(self):
@@ -499,13 +505,13 @@ class StreamingClient:
 
     async def run(self):
         """Main client loop with streaming chunks."""
-        print(f"Server: {self.server_url}")
-        print(f"Mode: streaming (pause={self.pause_ms}ms, silence={self.silence_ms}ms)")
-        print(f"Min energy: {self.min_energy}")
-        print("Press Ctrl+C to stop\n")
+        logger.info(f"Server: {self.server_url}")
+        logger.info(f"Mode: streaming (pause={self.pause_ms}ms, silence={self.silence_ms}ms)")
+        logger.info(f"Min energy: {self.min_energy}")
+        logger.info("Press Ctrl+C to stop")
 
         if not await self._connect():
-            print(f"[offline] Server not available, will retry every {self.reconnect_interval}s\n")
+            logger.warning(f"[offline] Server not available, will retry every {self.reconnect_interval}s")
 
         with self.audio_capture:
             # State tracking
@@ -579,7 +585,7 @@ class StreamingClient:
                                     last_result_time = now
                                     chunk_number += 1
                                     utterance_transcripts.append(text)
-                                    print(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms] {text}")
+                                    logger.info(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms] {text}")
 
                         audio_chunks = []
                         chunk_start_time = time.perf_counter()
@@ -603,7 +609,7 @@ class StreamingClient:
                                         last_result_time = now
                                         chunk_number += 1
                                         utterance_transcripts.append(text)
-                                        print(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms] {text}")
+                                        logger.info(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms] {text}")
 
                         # Print complete utterance
                         if utterance_transcripts:
@@ -612,14 +618,14 @@ class StreamingClient:
                             first_ms = (first_result_time - utterance_start_time) * 1000
                             full_text = " ".join(utterance_transcripts)
                             self.latency_stats.record(e2e_ms, first_ms)
-                            print(f"[transcriber] [complete {e2e_ms:.0f}ms] {full_text}")
+                            logger.info(f"[transcriber] [complete {e2e_ms:.0f}ms] {full_text}")
                             # Forward to agent if configured
                             if self.agent_client:
                                 agent_response = await self.agent_client.send_transcription(full_text)
                                 if agent_response:
                                     agent_text = agent_response.get("text", "")
                                     agent_ssml = agent_response.get("ssml")
-                                    print(f"[agent] {agent_text}")
+                                    logger.info(f"[agent] {agent_text}")
                                     # Play TTS if configured
                                     if self.tts_client:
                                         await self.tts_client.speak(agent_text, ssml=agent_ssml)
@@ -653,7 +659,7 @@ class StreamingClient:
                                         chunk_number += 1
                                         chunk_time = (time.perf_counter() - chunk_start_time) * 1000
                                         utterance_transcripts.append(text)
-                                        print(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms max] {text}")
+                                        logger.info(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms max] {text}")
                             audio_chunks = []
                             chunk_start_time = time.perf_counter()
 
@@ -688,14 +694,14 @@ async def main():
         agent_client = AgentClient(agent_url, character=agent_character or None)
         await agent_client.connect()
         if agent_character:
-            print(f"[agent] Character: {agent_character}")
-        print(f"[agent] Cooldown after response: {agent_cooldown_ms}ms")
+            logger.info(f"[agent] Character: {agent_character}")
+        logger.info(f"[agent] Cooldown after response: {agent_cooldown_ms}ms")
 
     # Create TTS client if configured
     tts_client = None
     if tts_url:
         tts_client = TtsClient(tts_url=tts_url, voice=tts_voice)
-        print(f"[tts] Enabled: {tts_url} (voice: {tts_voice})")
+        logger.info(f"[tts] Enabled: {tts_url} (voice: {tts_voice})")
 
     if mode == "streaming":
         client = StreamingClient(
@@ -724,8 +730,8 @@ async def main():
     except KeyboardInterrupt:
         pass
     finally:
-        print(f"\n--- Latency Summary ---")
-        print(client.latency_stats.summary())
+        logger.info("--- Latency Summary ---")
+        logger.info(client.latency_stats.summary())
 
 
 if __name__ == "__main__":

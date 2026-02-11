@@ -4,14 +4,12 @@ import asyncio
 import queue
 import threading
 import time
+import logging
 import numpy as np
 import sounddevice as sd
 import websockets
 
-
-def _ts():
-    """Return timestamp string."""
-    return time.strftime("%H:%M:%S")
+logger = logging.getLogger("client.tts")
 
 
 class TtsClient:
@@ -38,7 +36,7 @@ class TtsClient:
             return 0.0
 
         text_preview = text[:50] + "..." if len(text) > 50 else text
-        print(f"[{_ts()}] [tts] Sending: {text_preview}")
+        logger.info(f"[tts] Sending: {text_preview}")
 
         # Queue for streaming audio to playback thread
         audio_queue: queue.Queue[bytes | None] = queue.Queue()
@@ -57,7 +55,7 @@ class TtsClient:
                 )
                 stream.start()
                 playback_started.set()
-                print(f"[{_ts()}] [tts] Playback thread started")
+                logger.info("[tts] Playback thread started")
 
                 while True:
                     chunk = audio_queue.get()
@@ -68,12 +66,12 @@ class TtsClient:
                     audio_float = audio_data.astype(np.float32) / 32768.0
                     stream.write(audio_float)
             except Exception as e:
-                print(f"[{_ts()}] [tts] Playback error: {e}")
+                logger.error(f"[tts] Playback error: {e}")
             finally:
                 if stream:
                     stream.stop()
                     stream.close()
-                print(f"[{_ts()}] [tts] Playback thread done")
+                logger.info("[tts] Playback thread done")
                 playback_done.set()
 
         try:
@@ -107,7 +105,7 @@ class TtsClient:
                             break
                         if chunk_count == 0:
                             first_chunk_time = time.perf_counter() - start_time
-                            print(f"[{_ts()}] [tts] First chunk in {first_chunk_time*1000:.0f}ms, streaming...")
+                            logger.info(f"[tts] First chunk in {first_chunk_time*1000:.0f}ms, streaming...")
                         chunk_count += 1
                         total_bytes += len(message)
                         audio_queue.put(message)
@@ -115,7 +113,7 @@ class TtsClient:
                         try:
                             data = json.loads(message)
                             if "error" in data:
-                                print(f"[{_ts()}] [tts] Error: {data['error']}")
+                                logger.error(f"[tts] Error: {data['error']}")
                                 audio_queue.put(None)
                                 return 0.0
                         except json.JSONDecodeError:
@@ -128,15 +126,15 @@ class TtsClient:
                 playback_done.wait(timeout=60)
 
                 duration = total_bytes / 2 / self.sample_rate  # 16-bit = 2 bytes per sample
-                print(f"[{_ts()}] [tts] Done: {chunk_count} chunks, {duration:.1f}s audio")
+                logger.info(f"[tts] Done: {chunk_count} chunks, {duration:.1f}s audio")
                 return duration
 
         except (OSError, websockets.exceptions.WebSocketException) as e:
-            print(f"[{_ts()}] [tts] Connection error: {e}")
+            logger.error(f"[tts] Connection error: {e}")
             audio_queue.put(None)
             return 0.0
         except asyncio.TimeoutError:
-            print(f"[{_ts()}] [tts] Connection timeout")
+            logger.error("[tts] Connection timeout")
             audio_queue.put(None)
             return 0.0
         finally:
