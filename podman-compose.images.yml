@@ -1,0 +1,30 @@
+# Override to use pre-built images instead of building
+# Use when images were built on Mac and transferred to RPi
+#
+# Usage:
+#   podman compose -f podman-compose.yml -f podman-compose.rpi.yml -f podman-compose.images.yml up
+#
+# Build on Mac:
+#   podman build -t ai-assistant-stt:hailo -f docker/stt-server-hailo.Dockerfile .
+#   podman build -t ai-assistant-agent:latest -f docker/agent.Dockerfile .
+#   podman build -t ai-assistant-tts:latest -f docker/tts.Dockerfile .
+#   podman build -t ai-assistant-client:latest -f docker/client.Dockerfile .
+#
+# Transfer to RPi:
+#   podman save ai-assistant-stt:hailo | ssh alreva@rpi.local "podman load"
+#   (repeat for other images)
+
+version: "3.8"
+
+services:
+  stt-server:
+    image: localhost/ai-assistant-stt:hailo
+
+  agent:
+    image: localhost/ai-assistant-agent:latest
+
+  tts:
+    image: localhost/ai-assistant-tts:latest
+
+  client:
+    image: localhost/ai-assistant-client:latest

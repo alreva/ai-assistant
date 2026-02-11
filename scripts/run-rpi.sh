@@ -3,26 +3,25 @@
 # Includes Hailo NPU acceleration and audio passthrough
 #
 # Usage:
-#   ./scripts/run-rpi.sh          # start all services
+#   ./scripts/run-rpi.sh          # start all services (uses pre-built images)
 #   ./scripts/run-rpi.sh up       # start all services
 #   ./scripts/run-rpi.sh down     # stop services
 #   ./scripts/run-rpi.sh logs     # view all logs
 #   ./scripts/run-rpi.sh logs agent  # view specific service logs
-#   ./scripts/run-rpi.sh build    # rebuild images
+#   ./scripts/run-rpi.sh build    # rebuild images locally (slow on RPi)
 #   ./scripts/run-rpi.sh ps       # show running containers
+#
+# Pre-built images workflow (recommended):
+#   1. Build on Mac: podman build -t ai-assistant-stt:hailo -f docker/stt-server-hailo.Dockerfile .
+#   2. Transfer: podman save ai-assistant-stt:hailo | ssh alreva@rpi.local "podman load"
+#   3. Run: ./scripts/run-rpi.sh up
 
 set -e
 cd "$(dirname "$0")/.."
 
-COMPOSE="podman compose -f podman-compose.yml -f podman-compose.rpi.yml"
-
-# Check for TimeReportingMcpSdk symlink (required for agent build)
-if [ ! -d "TimeReportingMcpSdk" ]; then
-    echo "Error: TimeReportingMcpSdk not found."
-    echo "Create symlink or copy the directory:"
-    echo "  ln -s /path/to/TimeReportingMcpSdk TimeReportingMcpSdk"
-    exit 1
-fi
+# Use pre-built images by default (faster), fall back to build if not available
+COMPOSE="podman compose -f podman-compose.yml -f podman-compose.rpi.yml -f podman-compose.images.yml"
+COMPOSE_BUILD="podman compose -f podman-compose.yml -f podman-compose.rpi.yml"
 
 # Check for Hailo device
 if [ ! -e "/dev/hailo0" ]; then
@@ -47,8 +46,8 @@ case "${1:-up}" in
         $COMPOSE logs -f ${1:-}
         ;;
     build)
-        echo "Building images..."
-        $COMPOSE build
+        echo "Building images locally (this is slow on RPi, consider building on Mac)..."
+        $COMPOSE_BUILD build
         ;;
     ps)
         $COMPOSE ps
