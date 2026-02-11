@@ -1,0 +1,37 @@
+# Raspberry Pi override for podman-compose.yml (CPU STT version)
+# Uses CPU-based Whisper instead of Hailo NPU
+#
+# Usage:
+#   podman compose -f podman-compose.yml -f podman-compose.rpi-cpu.yml up
+
+version: "3.8"
+
+services:
+  # ==========================================================================
+  # Client - Audio capture/playback (RPi only)
+  # ==========================================================================
+  client:
+    build:
+      context: .
+      dockerfile: docker/client.Dockerfile
+    container_name: ai-assistant-client
+    depends_on:
+      - stt-server
+      - agent
+      - tts
+    environment:
+      - SERVER_URL=ws://stt-server:8765
+      - AGENT_URL=ws://agent:8766
+      - TTS_URL=ws://tts:8767
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+    # Audio device passthrough
+    devices:
+      - /dev/snd:/dev/snd
+    volumes:
+      # PulseAudio socket for audio playback
+      - /run/user/1000/pulse:/run/user/1000/pulse
+    group_add:
+      - audio
+    restart: unless-stopped
+
+  # STT uses CPU backend from base compose (no Hailo override)
