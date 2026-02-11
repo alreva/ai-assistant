@@ -1,10 +1,15 @@
 // VoiceAgent/Program.cs
+using System.Diagnostics;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using OpenTelemetry;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using Azure.Monitor.OpenTelemetry.Exporter;
 using VoiceAgent.Handlers;
 using VoiceAgent.Models;
 using VoiceAgent.Services;
@@ -46,6 +51,19 @@ builder.Services.AddSingleton<ConfirmationDetector>();
 builder.Services.AddSingleton<IMcpClientService, McpClientService>();
 builder.Services.AddSingleton<IAgentService, AgentService>();
 builder.Services.AddSingleton<WebSocketHandler>();
+
+// OpenTelemetry
+var connectionString = Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING");
+if (!string.IsNullOrEmpty(connectionString))
+{
+    builder.Services.AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService("voice-agent"))
+        .WithTracing(t =>
+        {
+            t.AddSource("VoiceAgent");
+            t.AddAzureMonitorTraceExporter(o => o.ConnectionString = connectionString);
+        });
+}
 
 var app = builder.Build();
 
