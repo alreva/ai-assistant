@@ -14,7 +14,8 @@
 # ==============================================================================
 # Stage 1: Builder - Install Python dependencies
 # ==============================================================================
-FROM python:3.13-slim-bookworm AS builder
+# Use trixie (Debian 13) to match RPi host GLIBC version for Hailo SDK compatibility
+FROM python:3.13-slim-trixie AS builder
 
 WORKDIR /build
 
@@ -41,7 +42,8 @@ RUN git clone --depth 1 https://github.com/hailo-ai/hailo-apps.git /opt/hailo-ap
 # ==============================================================================
 # Stage 2: Production runtime
 # ==============================================================================
-FROM python:3.13-slim-bookworm AS runtime
+# Use trixie (Debian 13) to match RPi host GLIBC version for Hailo SDK compatibility
+FROM python:3.13-slim-trixie AS runtime
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
