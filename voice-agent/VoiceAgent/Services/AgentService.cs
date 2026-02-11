@@ -1,4 +1,5 @@
 // VoiceAgent/Services/AgentService.cs
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using OpenAI.Chat;
@@ -8,6 +9,7 @@ namespace VoiceAgent.Services;
 
 public class AgentService : IAgentService
 {
+    private static readonly ActivitySource ActivitySource = new("VoiceAgent");
     private const int MaxToolCallsPerRequest = 5;
     private static readonly HashSet<string> DestructiveTools = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -112,7 +114,18 @@ public class AgentService : IAgentService
         session.AddUserMessage(userText);
 
         // Execute the tool
-        var result = await _mcpClient.ExecuteToolAsync(pending.ToolName, pending.Arguments);
+        string result;
+        using (var toolActivity = ActivitySource.StartActivity("mcp-tool-call"))
+        {
+            toolActivity?.SetTag("tool.name", pending.ToolName);
+            toolActivity?.SetTag("tool.arguments", JsonSerializer.Serialize(pending.Arguments));
+
+            result = await _mcpClient.ExecuteToolAsync(pending.ToolName, pending.Arguments);
+
+            toolActivity?.SetTag("tool.result_length", result.Length);
+            if (result.Length <= 1000)
+                toolActivity?.SetTag("tool.result", result);
+        }
 
         // Add tool call and result to history
         session.AddToolCall(pending.ToolCallId, pending.ToolName, pending.Arguments);
@@ -143,8 +156,22 @@ public class AgentService : IAgentService
             _logger.LogInformation("Calling LLM with {MessageCount} messages and {ToolCount} tools",
                 messages.Count, tools.Count);
 
-            var response = await _chatClient.CompleteChatAsync(messages, options);
-            var choice = response.Value;
+            ChatCompletion choice;
+            using (var llmActivity = ActivitySource.StartActivity("llm-call"))
+            {
+                llmActivity?.SetTag("llm.message_count", messages.Count);
+                llmActivity?.SetTag("llm.tool_count", tools.Count);
+
+                var response = await _chatClient.CompleteChatAsync(messages, options);
+                choice = response.Value;
+
+                llmActivity?.SetTag("llm.input_tokens", choice.Usage?.InputTokenCount);
+                llmActivity?.SetTag("llm.output_tokens", choice.Usage?.OutputTokenCount);
+                llmActivity?.SetTag("llm.finish_reason", choice.FinishReason.ToString());
+
+                if (choice.Content.Count > 0)
+                    llmActivity?.SetTag("llm.response_text", choice.Content[0].Text?[..Math.Min(500, choice.Content[0].Text?.Length ?? 0)]);
+            }
 
             // Check if LLM wants to call a tool
             if (choice.ToolCalls.Count > 0)
@@ -164,12 +191,31 @@ public class AgentService : IAgentService
                     session.AddAssistantMessage(confirmationPrompt);
 
                     _logger.LogInformation("<<< Agent response (awaiting confirmation): {Text}", confirmationPrompt);
+
+                    Activity.Current?.AddEvent(new ActivityEvent("confirmation-requested",
+                        tags: new ActivityTagsCollection
+                        {
+                            { "tool.name", toolName },
+                            { "confirmation.prompt", confirmationPrompt }
+                        }));
+
                     return new AgentResponse { Text = confirmationPrompt, Ssml = GenerateSsml(confirmationPrompt, session), AwaitingConfirmation = true };
                 }
 
                 // Non-destructive tool - execute immediately
                 toolCallCount++;
-                var result = await _mcpClient.ExecuteToolAsync(toolName, arguments);
+                string result;
+                using (var toolActivity = ActivitySource.StartActivity("mcp-tool-call"))
+                {
+                    toolActivity?.SetTag("tool.name", toolName);
+                    toolActivity?.SetTag("tool.arguments", argsJson);
+
+                    result = await _mcpClient.ExecuteToolAsync(toolName, arguments);
+
+                    toolActivity?.SetTag("tool.result_length", result.Length);
+                    if (result.Length <= 1000)
+                        toolActivity?.SetTag("tool.result", result);
+                }
 
                 session.AddToolCall(toolCall.Id, toolName, arguments);
                 session.AddToolResult(toolCall.Id, toolName, result);
