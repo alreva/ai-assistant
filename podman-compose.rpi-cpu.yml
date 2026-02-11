@@ -24,6 +24,7 @@ services:
       - AGENT_URL=ws://agent:8766
       - TTS_URL=ws://tts:8767
       - PULSE_SERVER=unix:/run/user/1000/pulse/native
+      - APPLICATIONINSIGHTS_CONNECTION_STRING=${APPLICATIONINSIGHTS_CONNECTION_STRING:-}
     # Audio device passthrough
     devices:
       - /dev/snd:/dev/snd
