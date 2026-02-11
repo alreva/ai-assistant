@@ -26,6 +26,12 @@ build/
 # Claude
 .claude/
 
+# Environment variables (secrets)
+.env
+
+# Symlinks to external repos
+TimeReportingMcpSdk
+
 # .NET
 bin/
 obj/
