@@ -23,6 +23,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger("client")
 
+from opentelemetry import trace
+
+# Conditional telemetry setup
+_connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
+if _connection_string:
+    os.environ.setdefault("OTEL_SERVICE_NAME", "client")
+    from azure.monitor.opentelemetry import configure_azure_monitor
+    configure_azure_monitor(connection_string=_connection_string)
+
+tracer = trace.get_tracer("client")
+
+
+def _make_traceparent(span):
+    """Build W3C traceparent string from a span."""
+    ctx = span.get_span_context()
+    if ctx and ctx.is_valid:
+        return f"00-{format(ctx.trace_id, '032x')}-{format(ctx.span_id, '016x')}-01"
+    return None
+
 
 class AgentClient:
     """Client for forwarding transcriptions to the voice agent."""
@@ -54,7 +73,7 @@ class AgentClient:
             return True
         return await self.connect(silent=True)
 
-    async def send_transcription(self, text: str) -> dict | None:
+    async def send_transcription(self, text: str, traceparent: str | None = None) -> dict | None:
         """Send transcription to agent and get response with text and ssml."""
         # Try to reconnect if disconnected
         if not await self.ensure_connected():
@@ -69,6 +88,8 @@ class AgentClient:
             }
             if self.character:
                 msg_data["character"] = self.character
+            if traceparent:
+                msg_data["traceparent"] = traceparent
             message = json.dumps(msg_data)
             await self._ws.send(message)
             response = await asyncio.wait_for(self._ws.recv(), timeout=60)
@@ -210,14 +231,19 @@ class BatchClient:
         self._ws = None
         self._connected = False
 
-    def _build_transcribe_message(self, audio: np.ndarray) -> str:
+    def _build_transcribe_message(self, audio: np.ndarray, traceparent: str | None = None) -> str:
         """Build transcribe message with audio batch."""
         audio_b64 = base64.b64encode(audio.astype(np.float32).tobytes()).decode()
-        return json.dumps({
+        msg = {
             "type": "transcribe",
             "audio": audio_b64,
-            "sample_rate": self.sample_rate
-        })
+            "sample_rate": self.sample_rate,
+        }
+        if self.agent_client:
+            msg["session_id"] = self.agent_client.session_id
+        if traceparent:
+            msg["traceparent"] = traceparent
+        return json.dumps(msg)
 
     def _detect_speech(self, chunk: np.ndarray) -> tuple[bool, float]:
         """Detect speech in chunk using VAD and energy. Returns (is_speech, energy)."""
@@ -259,14 +285,14 @@ class BatchClient:
             self._ws = None
             return False
 
-    async def _send_and_receive(self, audio: np.ndarray) -> tuple[dict | None, float]:
+    async def _send_and_receive(self, audio: np.ndarray, traceparent: str | None = None) -> tuple[dict | None, float]:
         """Send audio batch and receive result. Returns (result, rtt_ms)."""
         if not self._connected or self._ws is None:
             return None, 0
 
         try:
             start = time.perf_counter()
-            message = self._build_transcribe_message(audio)
+            message = self._build_transcribe_message(audio, traceparent=traceparent)
             await self._ws.send(message)
             response = await self._ws.recv()
             rtt_ms = (time.perf_counter() - start) * 1000
@@ -347,37 +373,42 @@ class BatchClient:
                             continue
 
                         if self._connected:
-                            result, rtt_ms = await self._send_and_receive(audio)
-                            if result:
-                                total_ms = (time.perf_counter() - state.speech_start_time) * 1000
-                                if result.get("type") == "noise":
-                                    sample = result.get("sample", "")
-                                    logger.debug(f"[noise] {sample}")
-                                else:
-                                    text = result.get("text", "").strip()
-                                    self.latency_stats.record(total_ms)
-                                    if text:
-                                        logger.info(f"[transcriber] [{total_ms:.0f}ms] {text}")
-                                        # Forward to agent if configured
-                                        if self.agent_client:
-                                            agent_response = await self.agent_client.send_transcription(text)
-                                            if agent_response:
-                                                agent_text = agent_response.get("text", "")
-                                                agent_ssml = agent_response.get("ssml")
-                                                logger.info(f"[agent] {agent_text}")
-                                                # Play TTS if configured
-                                                if self.tts_client:
-                                                    logger.info("[tts] Starting playback...")
-                                                    await self.tts_client.speak(agent_text, ssml=agent_ssml)
-                                                    logger.info("[tts] Playback returned")
-                                                    # Small cooldown after streaming playback completes
-                                                    cooldown_s = 0.5
-                                                    self._agent_cooldown_until = time.perf_counter() + cooldown_s
-                                                    logger.info("[listening]")
-                                                else:
-                                                    # Start cooldown to prevent TTS feedback
-                                                    self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
-                                                    logger.info(f"[mic muted for {self.agent_cooldown_ms}ms]")
+                            with tracer.start_as_current_span("voice-interaction") as span:
+                                span.set_attribute("session.id", self.agent_client.session_id if self.agent_client else "none")
+                                span.set_attribute("audio.duration_ms", duration_ms)
+                                traceparent = _make_traceparent(span)
+
+                                result, rtt_ms = await self._send_and_receive(audio, traceparent=traceparent)
+                                if result:
+                                    total_ms = (time.perf_counter() - state.speech_start_time) * 1000
+                                    if result.get("type") == "noise":
+                                        sample = result.get("sample", "")
+                                        logger.debug(f"[noise] {sample}")
+                                    else:
+                                        text = result.get("text", "").strip()
+                                        self.latency_stats.record(total_ms)
+                                        if text:
+                                            logger.info(f"[transcriber] [{total_ms:.0f}ms] {text}")
+                                            # Forward to agent if configured
+                                            if self.agent_client:
+                                                agent_response = await self.agent_client.send_transcription(text, traceparent=traceparent)
+                                                if agent_response:
+                                                    agent_text = agent_response.get("text", "")
+                                                    agent_ssml = agent_response.get("ssml")
+                                                    logger.info(f"[agent] {agent_text}")
+                                                    # Play TTS if configured
+                                                    if self.tts_client:
+                                                        logger.info("[tts] Starting playback...")
+                                                        await self.tts_client.speak(agent_text, ssml=agent_ssml, traceparent=traceparent, session_id=self.agent_client.session_id if self.agent_client else None)
+                                                        logger.info("[tts] Playback returned")
+                                                        # Small cooldown after streaming playback completes
+                                                        cooldown_s = 0.5
+                                                        self._agent_cooldown_until = time.perf_counter() + cooldown_s
+                                                        logger.info("[listening]")
+                                                    else:
+                                                        # Start cooldown to prevent TTS feedback
+                                                        self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
+                                                        logger.info(f"[mic muted for {self.agent_cooldown_ms}ms]")
                         else:
                             logger.warning(f"[offline] Speech detected ({duration_ms:.0f}ms) - server unavailable")
 
@@ -444,14 +475,19 @@ class StreamingClient:
         self._ws = None
         self._connected = False
 
-    def _build_transcribe_message(self, audio: np.ndarray) -> str:
+    def _build_transcribe_message(self, audio: np.ndarray, traceparent: str | None = None) -> str:
         """Build transcribe message with audio."""
         audio_b64 = base64.b64encode(audio.astype(np.float32).tobytes()).decode()
-        return json.dumps({
+        msg = {
             "type": "transcribe",
             "audio": audio_b64,
-            "sample_rate": self.sample_rate
-        })
+            "sample_rate": self.sample_rate,
+        }
+        if self.agent_client:
+            msg["session_id"] = self.agent_client.session_id
+        if traceparent:
+            msg["traceparent"] = traceparent
+        return json.dumps(msg)
 
     def _detect_speech(self, chunk: np.ndarray) -> tuple[bool, float]:
         """Detect speech in chunk using VAD and energy."""
@@ -476,14 +512,14 @@ class StreamingClient:
             self._ws = None
             return False
 
-    async def _send_and_receive(self, audio: np.ndarray) -> tuple[dict | None, float]:
+    async def _send_and_receive(self, audio: np.ndarray, traceparent: str | None = None) -> tuple[dict | None, float]:
         """Send audio and receive result."""
         if not self._connected or self._ws is None:
             return None, 0
 
         try:
             start = time.perf_counter()
-            message = self._build_transcribe_message(audio)
+            message = self._build_transcribe_message(audio, traceparent=traceparent)
             await self._ws.send(message)
             response = await self._ws.recv()
             rtt_ms = (time.perf_counter() - start) * 1000
@@ -592,49 +628,55 @@ class StreamingClient:
 
                     # Check for long silence - end of utterance
                     if is_speaking and silence_count >= self.silence_chunks:
-                        # Send any remaining audio
-                        if audio_chunks:
-                            audio = np.concatenate(audio_chunks)
-                            duration_ms = len(audio) / self.sample_rate * 1000
+                        with tracer.start_as_current_span("voice-interaction") as span:
+                            span.set_attribute("session.id", self.agent_client.session_id if self.agent_client else "none")
+                            utterance_duration_ms = (time.perf_counter() - utterance_start_time) * 1000
+                            span.set_attribute("audio.duration_ms", utterance_duration_ms)
+                            traceparent = _make_traceparent(span)
 
-                            if duration_ms >= self.min_chunk_ms and self._connected:
-                                result, rtt_ms = await self._send_and_receive(audio)
-                                if result and result.get("type") != "noise":
-                                    text = result.get("text", "").strip()
-                                    if text:
-                                        now = time.perf_counter()
-                                        chunk_time = (now - chunk_start_time) * 1000
-                                        if first_result_time == 0.0:
-                                            first_result_time = now
-                                        last_result_time = now
-                                        chunk_number += 1
-                                        utterance_transcripts.append(text)
-                                        logger.info(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms] {text}")
+                            # Send any remaining audio
+                            if audio_chunks:
+                                audio = np.concatenate(audio_chunks)
+                                duration_ms = len(audio) / self.sample_rate * 1000
 
-                        # Print complete utterance
-                        if utterance_transcripts:
-                            # e2e = speech start to last transcription received (excludes silence detection)
-                            e2e_ms = (last_result_time - utterance_start_time) * 1000
-                            first_ms = (first_result_time - utterance_start_time) * 1000
-                            full_text = " ".join(utterance_transcripts)
-                            self.latency_stats.record(e2e_ms, first_ms)
-                            logger.info(f"[transcriber] [complete {e2e_ms:.0f}ms] {full_text}")
-                            # Forward to agent if configured
-                            if self.agent_client:
-                                agent_response = await self.agent_client.send_transcription(full_text)
-                                if agent_response:
-                                    agent_text = agent_response.get("text", "")
-                                    agent_ssml = agent_response.get("ssml")
-                                    logger.info(f"[agent] {agent_text}")
-                                    # Play TTS if configured
-                                    if self.tts_client:
-                                        await self.tts_client.speak(agent_text, ssml=agent_ssml)
-                                        # Small cooldown after streaming playback completes
-                                        cooldown_s = 0.5
-                                        self._agent_cooldown_until = time.perf_counter() + cooldown_s
-                                    else:
-                                        # Start cooldown to prevent TTS feedback
-                                        self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
+                                if duration_ms >= self.min_chunk_ms and self._connected:
+                                    result, rtt_ms = await self._send_and_receive(audio, traceparent=traceparent)
+                                    if result and result.get("type") != "noise":
+                                        text = result.get("text", "").strip()
+                                        if text:
+                                            now = time.perf_counter()
+                                            chunk_time = (now - chunk_start_time) * 1000
+                                            if first_result_time == 0.0:
+                                                first_result_time = now
+                                            last_result_time = now
+                                            chunk_number += 1
+                                            utterance_transcripts.append(text)
+                                            logger.info(f"[transcriber] [chunk {chunk_number} {chunk_time:.0f}ms] {text}")
+
+                            # Print complete utterance
+                            if utterance_transcripts:
+                                # e2e = speech start to last transcription received (excludes silence detection)
+                                e2e_ms = (last_result_time - utterance_start_time) * 1000
+                                first_ms = (first_result_time - utterance_start_time) * 1000
+                                full_text = " ".join(utterance_transcripts)
+                                self.latency_stats.record(e2e_ms, first_ms)
+                                logger.info(f"[transcriber] [complete {e2e_ms:.0f}ms] {full_text}")
+                                # Forward to agent if configured
+                                if self.agent_client:
+                                    agent_response = await self.agent_client.send_transcription(full_text, traceparent=traceparent)
+                                    if agent_response:
+                                        agent_text = agent_response.get("text", "")
+                                        agent_ssml = agent_response.get("ssml")
+                                        logger.info(f"[agent] {agent_text}")
+                                        # Play TTS if configured
+                                        if self.tts_client:
+                                            await self.tts_client.speak(agent_text, ssml=agent_ssml, traceparent=traceparent, session_id=self.agent_client.session_id if self.agent_client else None)
+                                            # Small cooldown after streaming playback completes
+                                            cooldown_s = 0.5
+                                            self._agent_cooldown_until = time.perf_counter() + cooldown_s
+                                        else:
+                                            # Start cooldown to prevent TTS feedback
+                                            self._agent_cooldown_until = time.perf_counter() + self.agent_cooldown_ms / 1000
 
                         # Reset state
                         is_speaking = False

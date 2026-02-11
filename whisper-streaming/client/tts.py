@@ -26,7 +26,9 @@ class TtsClient:
         self.sample_rate = sample_rate
         self._playing = False
 
-    async def speak(self, text: str, ssml: str | None = None) -> float:
+    async def speak(self, text: str, ssml: str | None = None,
+                    traceparent: str | None = None,
+                    session_id: str | None = None) -> float:
         """
         Send text to TTS service and stream audio playback.
         If ssml is provided, it will be used instead of building SSML from text.
@@ -83,6 +85,10 @@ class TtsClient:
                 }
                 if ssml:
                     request_data["ssml"] = ssml
+                if traceparent:
+                    request_data["traceparent"] = traceparent
+                if session_id:
+                    request_data["session_id"] = session_id
                 request = json.dumps(request_data)
                 await ws.send(request)
 
