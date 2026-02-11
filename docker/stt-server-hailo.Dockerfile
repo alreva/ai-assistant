@@ -33,7 +33,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install Python dependencies for STT server
 RUN pip install --no-cache-dir \
     websockets>=12.0 \
-    numpy>=1.24.0
+    numpy>=1.24.0 \
+    opentelemetry-api>=1.29.0 \
+    opentelemetry-sdk>=1.29.0 \
+    azure-monitor-opentelemetry>=1.6.4
 
 # Clone and install hailo-apps with speech-rec extras (provides Whisper pipeline for Hailo)
 # speech-rec includes transformers, torch, etc.
