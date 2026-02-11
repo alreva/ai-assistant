@@ -5,7 +5,7 @@
 # ==============================================================================
 # Stage 1: Restore dependencies
 # ==============================================================================
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS restore
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS restore
 
 WORKDIR /src
 
@@ -85,7 +85,7 @@ RUN dotnet publish TimeReportingMcpSdk/TimeReportingMcpSdk.csproj \
 # ==============================================================================
 # Stage 6: Runtime
 # ==============================================================================
-FROM mcr.microsoft.com/dotnet/runtime:8.0 AS runtime
+FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash agent
