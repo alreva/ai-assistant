@@ -23,6 +23,7 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Create virtual environment
@@ -34,10 +35,16 @@ RUN pip install --no-cache-dir \
     websockets>=12.0 \
     numpy>=1.24.0
 
-# Clone and install hailo-apps (provides Whisper pipeline for Hailo)
+# Clone and install hailo-apps with speech-rec extras (provides Whisper pipeline for Hailo)
+# speech-rec includes transformers, torch, etc.
 RUN git clone --depth 1 https://github.com/hailo-ai/hailo-apps.git /opt/hailo-apps \
     && cd /opt/hailo-apps \
-    && pip install --no-cache-dir -e .
+    && pip install --no-cache-dir -e ".[speech-rec]"
+
+# Download required Whisper resources (HEF models and tokenization weights)
+# Must run from the app directory so files are saved to correct location
+RUN cd /opt/hailo-apps/hailo_apps/python/standalone_apps/speech_recognition/app && \
+    python download_resources.py --hw-arch hailo10h --variant base
 
 # ==============================================================================
 # Stage 2: Production runtime
@@ -56,6 +63,11 @@ RUN useradd --create-home --shell /bin/bash --groups video stt
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/hailo-apps /opt/hailo-apps
+
+# Patch hailo-apps numpy compatibility bug
+# See: https://github.com/hailo-ai/hailo-apps/issues/XXX
+RUN sed -i 's/np.array(\[\[next_token\]\], dtype=np.int64)/int(next_token)/g' \
+    /opt/hailo-apps/hailo_apps/python/standalone_apps/speech_recognition/app/hailo_whisper_pipeline.py
 
 # Set up Python environment
 ENV PATH="/opt/venv/bin:$PATH"
