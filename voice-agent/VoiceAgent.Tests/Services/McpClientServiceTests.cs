@@ -16,14 +16,7 @@ public class McpClientServiceTests
             Arguments = "run --project ./TimeReportingMcpSdk"
         };
 
-        var aiConfig = new AzureOpenAIConfig
-        {
-            Endpoint = "https://example.openai.azure.com",
-            ApiKey = "test-key",
-            DeploymentName = "gpt-4o"
-        };
-
-        var service = new McpClientService(mcpConfig, aiConfig, NullLogger<McpClientService>.Instance);
+        var service = new McpClientService(mcpConfig, NullLogger<McpClientService>.Instance);
 
         service.Should().NotBeNull();
     }

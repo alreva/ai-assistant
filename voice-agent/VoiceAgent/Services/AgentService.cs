@@ -1,6 +1,8 @@
 // VoiceAgent/Services/AgentService.cs
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Xml;
 using Microsoft.Extensions.Logging;
 using OpenAI.Chat;
 using VoiceAgent.Models;
@@ -125,16 +127,11 @@ public class AgentService : IAgentService
             toolActivity?.SetTag("tool.result", PrettyJson(result));
         }
 
-        // Add tool call and result to history
+        // Add tool call and result to history — let agent loop produce a character-appropriate response
         session.AddToolCall(pending.ToolCallId, pending.ToolName, pending.Arguments);
         session.AddToolResult(pending.ToolCallId, pending.ToolName, result);
 
-        // Format for TTS
-        var ttsResponse = await _mcpClient.FormatForTtsAsync(result, pending.ConfirmationPrompt, pending.ToolName);
-        session.AddAssistantMessage(ttsResponse);
-
-        _logger.LogInformation("<<< Agent response: {Text}", ttsResponse);
-        return new AgentResponse { Text = ttsResponse, Ssml = GenerateSsml(ttsResponse, session), AwaitingConfirmation = false };
+        return await RunAgentLoopAsync(session);
     }
 
     private async Task<AgentResponse> RunAgentLoopAsync(Session session)
@@ -216,11 +213,12 @@ public class AgentService : IAgentService
             }
 
             // LLM returned a text response
-            var responseText = choice.Content.Count > 0 ? choice.Content[0].Text : "I'm not sure how to help with that.";
-            session.AddAssistantMessage(responseText);
+            var rawResponse = choice.Content.Count > 0 ? choice.Content[0].Text : "I'm not sure how to help with that.";
+            var (plainText, ssml) = ParseSsmlResponse(rawResponse, session);
+            session.AddAssistantMessage(plainText);
 
-            _logger.LogInformation("<<< Agent response: {Text}", responseText);
-            return new AgentResponse { Text = responseText, Ssml = GenerateSsml(responseText, session), AwaitingConfirmation = false };
+            _logger.LogInformation("<<< Agent response: {Text}", plainText);
+            return new AgentResponse { Text = plainText, Ssml = ssml, AwaitingConfirmation = false };
         }
 
         // Safety limit reached
@@ -237,6 +235,7 @@ public class AgentService : IAgentService
 
         // System prompt
         var today = DateTime.Now.ToString("yyyy-MM-dd");
+        var lang = character.VoiceName.Length >= 5 ? character.VoiceName[..5] : "en-US";
         var systemPrompt = $@"Today's date is {today}. You are a voice assistant for time reporting.
 
 CHARACTER:
@@ -259,7 +258,24 @@ TIME LOGGING:
 
 IMPORTANT:
 - Do NOT ask ""should I proceed?"" - the system handles confirmation automatically
-- Just call the tool when ready - system will prompt for confirmation";
+- Just call the tool when ready - system will prompt for confirmation
+
+RESPONSE FORMAT:
+When you respond with text (not tool calls), return a JSON object with two fields:
+{{""text"": ""your plain text response"", ""ssml"": ""<speak>...</speak>""}}
+
+For the ssml field, use this Azure TTS template as the outer structure and enrich the inner content with SSML as you see fit:
+<speak version=""1.0"" xmlns=""http://www.w3.org/2001/10/synthesis"" xmlns:mstts=""https://www.w3.org/2001/mstts"" xml:lang=""{lang}"">
+  <voice name=""{character.VoiceName}"">
+    <mstts:silence type=""Sentenceboundary"" value=""{character.SentencePause}""/>
+    <mstts:silence type=""Comma-exact"" value=""{character.CommaPause}""/>
+    <mstts:express-as style=""{character.DefaultStyle}"" styledegree=""{character.StyleDegree}"">
+      <prosody rate=""{character.Rate}"" pitch=""{character.Pitch}"">
+        YOUR CONTENT HERE
+      </prosody>
+    </mstts:express-as>
+  </voice>
+</speak>";
 
         messages.Add(new SystemChatMessage(systemPrompt));
 
@@ -443,6 +459,59 @@ IMPORTANT:
         {
             return json;
         }
+    }
+
+    private (string plainText, string ssml) ParseSsmlResponse(string rawResponse, Session session)
+    {
+        if (string.IsNullOrWhiteSpace(rawResponse))
+        {
+            var fallback = "I'm not sure how to help with that.";
+            return (fallback, GenerateSsml(fallback, session));
+        }
+
+        // Strip markdown code block wrapping if present
+        var trimmed = rawResponse.Trim();
+        if (trimmed.StartsWith("```"))
+        {
+            trimmed = Regex.Replace(trimmed, @"^```(?:json)?\s*\n?", "");
+            trimmed = Regex.Replace(trimmed, @"\n?```\s*$", "");
+            trimmed = trimmed.Trim();
+        }
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<SsmlResponse>(trimmed);
+            if (parsed?.Text != null)
+            {
+                var plainText = parsed.Text;
+                var ssml = parsed.Ssml;
+
+                // Validate SSML if present
+                if (!string.IsNullOrWhiteSpace(ssml) && ssml.TrimStart().StartsWith("<speak"))
+                {
+                    try
+                    {
+                        var xmlDoc = new XmlDocument();
+                        xmlDoc.LoadXml(ssml);
+                        return (plainText, ssml);
+                    }
+                    catch (XmlException ex)
+                    {
+                        _logger.LogWarning("LLM returned invalid SSML XML, falling back to GenerateSsml: {Error}", ex.Message);
+                    }
+                }
+
+                // JSON parsed but SSML missing or invalid — use GenerateSsml fallback
+                return (plainText, GenerateSsml(plainText, session));
+            }
+        }
+        catch (JsonException)
+        {
+            // Not JSON — treat as plain text
+        }
+
+        // Raw plain text fallback
+        return (rawResponse, GenerateSsml(rawResponse, session));
     }
 
     private string GenerateSsml(string text, Session session)

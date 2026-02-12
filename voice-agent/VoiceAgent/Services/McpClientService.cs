@@ -1,8 +1,5 @@
 // VoiceAgent/Services/McpClientService.cs
 using System.Text.Json;
-using System.Text.RegularExpressions;
-using Azure;
-using Azure.AI.OpenAI;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -13,20 +10,16 @@ namespace VoiceAgent.Services;
 public class McpClientService : IMcpClientService, IAsyncDisposable
 {
     private readonly McpClientConfig _mcpConfig;
-    private readonly AzureOpenAIConfig _aiConfig;
     private readonly ILogger<McpClientService> _logger;
     private McpClient? _mcpClient;
-    private ChatClient? _chatClient;
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private bool _initialized;
 
     public McpClientService(
         McpClientConfig mcpConfig,
-        AzureOpenAIConfig aiConfig,
         ILogger<McpClientService> logger)
     {
         _mcpConfig = mcpConfig;
-        _aiConfig = aiConfig;
         _logger = logger;
     }
 
@@ -38,12 +31,6 @@ public class McpClientService : IMcpClientService, IAsyncDisposable
         try
         {
             if (_initialized) return;
-
-            // Initialize Azure OpenAI
-            var azureClient = new AzureOpenAIClient(
-                new Uri(_aiConfig.Endpoint),
-                new AzureKeyCredential(_aiConfig.ApiKey));
-            _chatClient = azureClient.GetChatClient(_aiConfig.DeploymentName);
 
             // Initialize MCP client
             var args = _mcpConfig.Arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -113,44 +100,6 @@ public class McpClientService : IMcpClientService, IAsyncDisposable
         {
             _logger.LogError(ex, "Error executing tool: {Tool}", toolName);
             return $"Error executing {toolName}: {ex.Message}";
-        }
-    }
-
-    public async Task<string> FormatForTtsAsync(string rawResult, string userQuery, string toolName)
-    {
-        await EnsureInitializedAsync();
-
-        var prompt = $@"Convert this data into a natural spoken response for text-to-speech.
-
-User asked: ""{userQuery}""
-Tool called: {toolName}
-Result data: {rawResult}
-
-Requirements:
-- Respond ONLY about the data returned - do not make up information
-- Speak naturally, like talking to a friend
-- Say dates as ""November 28th"" not ""11/28/2025""
-- Say ""8 hours"" not ""8.00h""
-- Never read UUIDs or IDs
-- Summarize lists, don't read every item
-- Keep it brief
-- No bullet points or formatting
-
-Response:";
-
-        try
-        {
-            var response = await _chatClient!.CompleteChatAsync(
-                [new UserChatMessage(prompt)]);
-            return response.Value.Content[0].Text.Trim();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "TTS formatting failed");
-            // Basic fallback - strip formatting
-            var text = Regex.Replace(rawResult, @"[a-f0-9-]{32,36}", "");
-            text = Regex.Replace(text, @"[\*#•✅❌📋⚠️]", "");
-            return text.Trim();
         }
     }
 
