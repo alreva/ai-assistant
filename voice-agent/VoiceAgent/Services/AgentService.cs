@@ -176,7 +176,8 @@ public class AgentService : IAgentService
                 // Check if destructive tool - require confirmation
                 if (DestructiveTools.Contains(toolName))
                 {
-                    var confirmationPrompt = GenerateConfirmationPrompt(toolName, arguments);
+                    var (confirmationPrompt, confirmationSsml) = await GenerateConfirmationAsync(session, toolName, argsJson);
+
                     session.SetPendingToolExecution(toolCall.Id, toolName, arguments, confirmationPrompt);
                     session.AddAssistantMessage(confirmationPrompt);
 
@@ -189,7 +190,7 @@ public class AgentService : IAgentService
                             { "confirmation.prompt", confirmationPrompt }
                         }));
 
-                    return new AgentResponse { Text = confirmationPrompt, Ssml = GenerateSsml(confirmationPrompt, session), AwaitingConfirmation = true };
+                    return new AgentResponse { Text = confirmationPrompt, Ssml = confirmationSsml, AwaitingConfirmation = true };
                 }
 
                 // Non-destructive tool - execute immediately
@@ -247,6 +248,7 @@ SPEECH STYLE:
 RULES:
 - Keep responses SHORT (1-2 sentences max)
 - NEVER use markdown: no asterisks, no bullet points, no bold, no lists
+- NEVER use emojis or special Unicode characters — this is voice-only output
 - Say dates as ""November 28th"" not ""2024-11-28""
 - Never read UUIDs or technical IDs aloud
 - Stay in character but still be helpful
@@ -257,8 +259,8 @@ TIME LOGGING:
 - Ask naturally for missing info
 
 IMPORTANT:
-- Do NOT ask ""should I proceed?"" - the system handles confirmation automatically
-- Just call the tool when ready - system will prompt for confirmation
+- Do NOT ask ""should I proceed?"" - just call the tool when ready
+- The system handles confirmation for destructive tools automatically
 
 RESPONSE FORMAT:
 When you respond with text (not tool calls), return a JSON object with two fields:
@@ -512,6 +514,32 @@ For the ssml field, use this Azure TTS template as the outer structure and enric
 
         // Raw plain text fallback
         return (rawResponse, GenerateSsml(rawResponse, session));
+    }
+
+    private async Task<(string plainText, string ssml)> GenerateConfirmationAsync(Session session, string toolName, string argsJson)
+    {
+        try
+        {
+            // Build messages from current conversation, then append a follow-up asking the LLM to describe the action
+            var messages = BuildChatMessages(session);
+            messages.Add(new SystemChatMessage(
+                $"You decided to call {toolName} with arguments: {argsJson}. " +
+                "Describe to the user what you're about to do with specific details (project, hours, date, task — whatever applies). " +
+                "Ask for confirmation. Stay in character. Keep it to 1-2 sentences. Vary how you ask."));
+
+            var response = await _chatClient.CompleteChatAsync(messages);
+            var raw = response.Value.Content.Count > 0 ? response.Value.Content[0].Text : null;
+
+            if (!string.IsNullOrWhiteSpace(raw))
+                return ParseSsmlResponse(raw, session);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to generate LLM confirmation for {Tool}, using static fallback", toolName);
+        }
+
+        var fallback = GenerateConfirmationPrompt(toolName, ParseToolArguments(argsJson));
+        return (fallback, GenerateSsml(fallback, session));
     }
 
     private string GenerateSsml(string text, Session session)
