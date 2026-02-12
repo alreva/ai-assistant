@@ -15,7 +15,7 @@ public class WebSocketHandlerTests
     {
         var mockAgent = new Mock<IAgentService>();
         mockAgent
-            .Setup(a => a.ProcessMessageAsync("session-1", "hello"))
+            .Setup(a => a.ProcessMessageAsync("session-1", "hello", null))
             .ReturnsAsync(new AgentResponse { Text = "Hi there!", AwaitingConfirmation = false });
 
         var handler = new WebSocketHandler(mockAgent.Object);
