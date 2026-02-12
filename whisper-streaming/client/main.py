@@ -73,21 +73,28 @@ def _make_traceparent(span):
 
 
 class AgentClient:
-    """Client for forwarding transcriptions to the voice agent."""
+    """Client for forwarding transcriptions to the voice agent.
 
-    def __init__(self, agent_url: str, character: str | None = None):
+    Resilient connection: starts without errors if agent is unavailable,
+    reconnects automatically in the background, and retries on hiccups.
+    """
+
+    def __init__(self, agent_url: str, character: str | None = None, reconnect_interval: float = 5.0):
         self.agent_url = agent_url
         self.session_id = str(uuid.uuid4())
         self.character = character
+        self.reconnect_interval = reconnect_interval
         self._ws = None
         self._connected = False
+        self._reconnect_task = None
 
     async def connect(self, silent: bool = False) -> bool:
         """Connect to the voice agent."""
         try:
-            self._ws = await websockets.connect(self.agent_url, close_timeout=2)
+            self._ws = await websockets.connect(self.agent_url, close_timeout=2, ping_timeout=60)
             self._connected = True
-            logger.info(f"[agent] Connected to {self.agent_url}")
+            if not silent:
+                logger.info(f"[connected] Agent connected")
             return True
         except (OSError, websockets.exceptions.WebSocketException) as e:
             self._connected = False
@@ -96,16 +103,27 @@ class AgentClient:
                 logger.warning(f"[agent] Not available: {e}")
             return False
 
-    async def ensure_connected(self) -> bool:
-        """Ensure connection, reconnecting if needed."""
-        if self._connected and self._ws is not None:
-            return True
-        return await self.connect(silent=True)
+    async def start(self):
+        """Start the agent client with background reconnection."""
+        if not await self.connect():
+            logger.warning(f"[agent] Not available yet, will retry every {self.reconnect_interval}s")
+        self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+
+    async def _reconnect_loop(self):
+        """Background task to reconnect when disconnected."""
+        while True:
+            if not self._connected:
+                await self.connect(silent=True)
+                if self._connected:
+                    logger.info("[connected] Agent reconnected")
+                else:
+                    await asyncio.sleep(self.reconnect_interval)
+            else:
+                await asyncio.sleep(1)
 
     async def send_transcription(self, text: str, traceparent: str | None = None) -> dict | None:
         """Send transcription to agent and get response with text and ssml."""
-        # Try to reconnect if disconnected
-        if not await self.ensure_connected():
+        if not self._connected or self._ws is None:
             return None
 
         try:
@@ -132,14 +150,23 @@ class AgentClient:
             logger.warning(f"[agent] Connection lost: {e}")
             return None
         except asyncio.TimeoutError:
-            logger.warning("[agent] Request timed out (60s)")
+            self._connected = False
+            logger.warning("[agent] Request timed out (60s), will reconnect")
             return None
         except Exception as e:
+            self._connected = False
             logger.error(f"[agent] Error: {e}")
             return None
 
     async def close(self):
-        """Close the agent connection."""
+        """Close the agent connection and stop reconnection."""
+        if self._reconnect_task:
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
+            self._reconnect_task = None
         if self._ws:
             await self._ws.close()
             self._ws = None
@@ -776,7 +803,7 @@ async def main():
     agent_client = None
     if agent_url:
         agent_client = AgentClient(agent_url, character=agent_character or None)
-        await agent_client.connect()
+        await agent_client.start()
         if agent_character:
             logger.info(f"[agent] Character: {agent_character}")
         logger.info(f"[agent] Cooldown after response: {agent_cooldown_ms}ms")
