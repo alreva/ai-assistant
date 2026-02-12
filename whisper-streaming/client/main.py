@@ -387,9 +387,12 @@ class BatchClient:
                             with tracer.start_as_current_span("voice-interaction") as span:
                                 span.set_attribute("session.id", self.agent_client.session_id if self.agent_client else "none")
                                 span.set_attribute("audio.duration_ms", duration_ms)
-                                traceparent = _make_traceparent(span)
 
-                                result, rtt_ms = await self._send_and_receive(audio, traceparent=traceparent)
+                                with tracer.start_as_current_span("call-stt") as stt_span:
+                                    stt_traceparent = _make_traceparent(stt_span)
+                                    result, rtt_ms = await self._send_and_receive(audio, traceparent=stt_traceparent)
+                                    stt_span.set_attribute("rtt_ms", rtt_ms)
+
                                 if result:
                                     total_ms = (time.perf_counter() - state.speech_start_time) * 1000
                                     if result.get("type") == "noise":
@@ -402,16 +405,20 @@ class BatchClient:
                                             logger.info(f"[transcriber] [{total_ms:.0f}ms] {text}")
                                             # Forward to agent if configured
                                             if self.agent_client:
-                                                agent_response = await self.agent_client.send_transcription(text, traceparent=traceparent)
+                                                with tracer.start_as_current_span("call-agent") as agent_span:
+                                                    agent_traceparent = _make_traceparent(agent_span)
+                                                    agent_response = await self.agent_client.send_transcription(text, traceparent=agent_traceparent)
                                                 if agent_response:
                                                     agent_text = agent_response.get("text", "")
                                                     agent_ssml = agent_response.get("ssml")
                                                     logger.info(f"[agent] {agent_text}")
                                                     # Play TTS if configured
                                                     if self.tts_client:
-                                                        logger.info("[tts] Starting playback...")
-                                                        await self.tts_client.speak(agent_text, ssml=agent_ssml, traceparent=traceparent, session_id=self.agent_client.session_id if self.agent_client else None)
-                                                        logger.info("[tts] Playback returned")
+                                                        with tracer.start_as_current_span("call-tts") as tts_span:
+                                                            tts_traceparent = _make_traceparent(tts_span)
+                                                            logger.info("[tts] Starting playback...")
+                                                            await self.tts_client.speak(agent_text, ssml=agent_ssml, traceparent=tts_traceparent, session_id=self.agent_client.session_id if self.agent_client else None)
+                                                            logger.info("[tts] Playback returned")
                                                         # Small cooldown after streaming playback completes
                                                         cooldown_s = 0.5
                                                         self._agent_cooldown_until = time.perf_counter() + cooldown_s
@@ -643,7 +650,6 @@ class StreamingClient:
                             span.set_attribute("session.id", self.agent_client.session_id if self.agent_client else "none")
                             utterance_duration_ms = (time.perf_counter() - utterance_start_time) * 1000
                             span.set_attribute("audio.duration_ms", utterance_duration_ms)
-                            traceparent = _make_traceparent(span)
 
                             # Send any remaining audio
                             if audio_chunks:
@@ -651,7 +657,10 @@ class StreamingClient:
                                 duration_ms = len(audio) / self.sample_rate * 1000
 
                                 if duration_ms >= self.min_chunk_ms and self._connected:
-                                    result, rtt_ms = await self._send_and_receive(audio, traceparent=traceparent)
+                                    with tracer.start_as_current_span("call-stt") as stt_span:
+                                        stt_traceparent = _make_traceparent(stt_span)
+                                        result, rtt_ms = await self._send_and_receive(audio, traceparent=stt_traceparent)
+                                        stt_span.set_attribute("rtt_ms", rtt_ms)
                                     if result and result.get("type") != "noise":
                                         text = result.get("text", "").strip()
                                         if text:
@@ -674,14 +683,18 @@ class StreamingClient:
                                 logger.info(f"[transcriber] [complete {e2e_ms:.0f}ms] {full_text}")
                                 # Forward to agent if configured
                                 if self.agent_client:
-                                    agent_response = await self.agent_client.send_transcription(full_text, traceparent=traceparent)
+                                    with tracer.start_as_current_span("call-agent") as agent_span:
+                                        agent_traceparent = _make_traceparent(agent_span)
+                                        agent_response = await self.agent_client.send_transcription(full_text, traceparent=agent_traceparent)
                                     if agent_response:
                                         agent_text = agent_response.get("text", "")
                                         agent_ssml = agent_response.get("ssml")
                                         logger.info(f"[agent] {agent_text}")
                                         # Play TTS if configured
                                         if self.tts_client:
-                                            await self.tts_client.speak(agent_text, ssml=agent_ssml, traceparent=traceparent, session_id=self.agent_client.session_id if self.agent_client else None)
+                                            with tracer.start_as_current_span("call-tts") as tts_span:
+                                                tts_traceparent = _make_traceparent(tts_span)
+                                                await self.tts_client.speak(agent_text, ssml=agent_ssml, traceparent=tts_traceparent, session_id=self.agent_client.session_id if self.agent_client else None)
                                             # Small cooldown after streaming playback completes
                                             cooldown_s = 0.5
                                             self._agent_cooldown_until = time.perf_counter() + cooldown_s
