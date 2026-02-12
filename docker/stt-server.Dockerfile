@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir \
     faster-whisper>=1.0.0 \
     opentelemetry-api>=1.29.0 \
     opentelemetry-sdk>=1.29.0 \
-    azure-monitor-opentelemetry>=1.6.4
+    azure-monitor-opentelemetry-exporter>=1.0.0b33
 
 # Production stage
 FROM python:3.11-slim

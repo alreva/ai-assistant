@@ -18,12 +18,19 @@ from .backends import create_backend
 _connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
 if _connection_string:
     try:
-        os.environ.setdefault("OTEL_SERVICE_NAME", "stt-server")
-        from azure.monitor.opentelemetry import configure_azure_monitor
-        configure_azure_monitor(connection_string=_connection_string)
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.sdk.resources import Resource
+        from azure.monitor.opentelemetry.exporter import AzureMonitorTraceExporter
+
+        resource = Resource.create({"service.name": "stt-server"})
+        provider = TracerProvider(resource=resource)
+        exporter = AzureMonitorTraceExporter(connection_string=_connection_string)
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+        logging.getLogger("azure").setLevel(logging.WARNING)
     except Exception as _e:
         logging.getLogger(__name__).warning(f"Azure Monitor telemetry unavailable: {_e}")
-        logging.getLogger(__name__).warning("Continuing without telemetry export")
 
 tracer = trace.get_tracer("stt-server")
 
@@ -163,9 +170,19 @@ def create_app():
                 # Extract parent context from traceparent
                 parent_context = None
                 if traceparent_str:
-                    from opentelemetry.trace.propagation import TraceContextTextMapPropagator
-                    propagator = TraceContextTextMapPropagator()
-                    parent_context = propagator.extract({"traceparent": traceparent_str})
+                    try:
+                        parts = traceparent_str.split("-")
+                        span_ctx = trace.SpanContext(
+                            trace_id=int(parts[1], 16),
+                            span_id=int(parts[2], 16),
+                            is_remote=True,
+                            trace_flags=trace.TraceFlags(int(parts[3], 16)),
+                        )
+                        parent_context = trace.set_span_in_context(
+                            trace.NonRecordingSpan(span_ctx)
+                        )
+                    except (IndexError, ValueError):
+                        logger.warning(f"Invalid traceparent: {traceparent_str}")
 
                 if msg_type == "transcribe":
                     with tracer.start_as_current_span(

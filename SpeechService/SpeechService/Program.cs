@@ -39,6 +39,7 @@ if (!string.IsNullOrEmpty(connectionString))
 }
 
 var app = builder.Build();
+await app.StartAsync();
 
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
 var handler = app.Services.GetRequiredService<WebSocketHandler>();

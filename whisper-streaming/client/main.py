@@ -29,12 +29,19 @@ from opentelemetry import trace
 _connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
 if _connection_string:
     try:
-        os.environ.setdefault("OTEL_SERVICE_NAME", "client")
-        from azure.monitor.opentelemetry import configure_azure_monitor
-        configure_azure_monitor(connection_string=_connection_string)
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.sdk.resources import Resource
+        from azure.monitor.opentelemetry.exporter import AzureMonitorTraceExporter
+
+        resource = Resource.create({"service.name": "client"})
+        provider = TracerProvider(resource=resource)
+        exporter = AzureMonitorTraceExporter(connection_string=_connection_string)
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+        logging.getLogger("azure").setLevel(logging.WARNING)
     except Exception as _e:
         logger.warning(f"Azure Monitor telemetry unavailable: {_e}")
-        logger.warning("Continuing without telemetry export")
 
 tracer = trace.get_tracer("client")
 

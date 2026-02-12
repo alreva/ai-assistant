@@ -19,7 +19,7 @@ client-silero = ["silero-vad>=4.0.0"]
 telemetry = [
     "opentelemetry-api>=1.29.0",
     "opentelemetry-sdk>=1.29.0",
-    "azure-monitor-opentelemetry>=1.6.4",
+    "azure-monitor-opentelemetry-exporter>=1.0.0b33",
 ]
 dev = [
     "pytest>=7.0.0",
