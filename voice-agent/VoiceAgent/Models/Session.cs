@@ -13,12 +13,16 @@ public record ConversationMessage(
     string? ToolCallId = null,
     string? ToolName = null,
     Dictionary<string, object?>? ToolArguments = null,
-    string? ToolResult = null);
+    string? ToolResult = null,
+    List<ToolCallInfo>? ToolCalls = null);
 
-public record PendingToolExecution(
+public record ToolCallInfo(
     string ToolCallId,
     string ToolName,
-    Dictionary<string, object?> Arguments,
+    Dictionary<string, object?> Arguments);
+
+public record PendingBatchExecution(
+    List<ToolCallInfo> ToolCalls,
     string ConfirmationPrompt);
 
 public class Session
@@ -29,7 +33,7 @@ public class Session
     public DateTime LastActivityTime { get; set; }
     public DateTime? ConfirmationRequestedAt { get; set; }
     public List<ConversationMessage> ConversationHistory { get; } = new();
-    public PendingToolExecution? PendingToolExecution { get; private set; }
+    public PendingBatchExecution? PendingBatchExecution { get; private set; }
     public CharacterConfig? Character { get; set; }
 
     public Session(string sessionId)
@@ -75,6 +79,16 @@ public class Session
         TouchActivity();
     }
 
+    public void AddToolCalls(List<ToolCallInfo> toolCalls)
+    {
+        ConversationHistory.Add(new ConversationMessage(
+            ConversationRole.Assistant,
+            Content: null,
+            ToolCalls: toolCalls));
+        TrimHistory();
+        TouchActivity();
+    }
+
     public void AddToolResult(string toolCallId, string toolName, string result)
     {
         ConversationHistory.Add(new ConversationMessage(
@@ -86,19 +100,19 @@ public class Session
         TouchActivity();
     }
 
-    public void SetPendingToolExecution(string toolCallId, string toolName, Dictionary<string, object?> arguments, string confirmationPrompt)
+    public void SetPendingBatchExecution(List<ToolCallInfo> toolCalls, string confirmationPrompt)
     {
-        PendingToolExecution = new PendingToolExecution(toolCallId, toolName, arguments, confirmationPrompt);
+        PendingBatchExecution = new PendingBatchExecution(toolCalls, confirmationPrompt);
         ConfirmationRequestedAt = DateTime.UtcNow;
     }
 
-    public void ClearPendingToolExecution()
+    public void ClearPendingBatchExecution()
     {
-        PendingToolExecution = null;
+        PendingBatchExecution = null;
         ConfirmationRequestedAt = null;
     }
 
-    public bool HasPendingConfirmation => PendingToolExecution != null;
+    public bool HasPendingConfirmation => PendingBatchExecution != null;
 
     public void TouchActivity()
     {

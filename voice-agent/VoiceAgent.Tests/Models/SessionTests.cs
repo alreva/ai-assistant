@@ -23,13 +23,11 @@ public class SessionTests
     }
 
     [Fact]
-    public void Session_PendingToolExecution_ExpiresAfterTimeout()
+    public void Session_PendingBatchExecution_ExpiresAfterTimeout()
     {
         var session = new Session("test-session");
-        session.SetPendingToolExecution(
-            "call-1",
-            "log_time",
-            new Dictionary<string, object?> { ["projectCode"] = "INTERNAL" },
+        session.SetPendingBatchExecution(
+            [new ToolCallInfo("call-1", "log_time", new Dictionary<string, object?> { ["projectCode"] = "INTERNAL" })],
             "I'll log time. Say yes to confirm.");
         session.ConfirmationRequestedAt = DateTime.UtcNow.AddMinutes(-3);
 
@@ -117,30 +115,55 @@ public class SessionTests
     }
 
     [Fact]
-    public void Session_SetPendingToolExecution_SetsPendingState()
+    public void Session_SetPendingBatchExecution_SetsPendingState()
     {
         var session = new Session("test-session");
         var args = new Dictionary<string, object?> { ["hours"] = 8 };
+        var toolCalls = new List<ToolCallInfo>
+        {
+            new("call-1", "log_time", args)
+        };
 
-        session.SetPendingToolExecution("call-1", "log_time", args, "Confirm?");
+        session.SetPendingBatchExecution(toolCalls, "Confirm?");
 
         session.HasPendingConfirmation.Should().BeTrue();
-        session.PendingToolExecution.Should().NotBeNull();
-        session.PendingToolExecution!.ToolName.Should().Be("log_time");
-        session.PendingToolExecution.Arguments.Should().BeEquivalentTo(args);
+        session.PendingBatchExecution.Should().NotBeNull();
+        session.PendingBatchExecution!.ToolCalls.Should().HaveCount(1);
+        session.PendingBatchExecution.ToolCalls[0].ToolName.Should().Be("log_time");
+        session.PendingBatchExecution.ToolCalls[0].Arguments.Should().BeEquivalentTo(args);
         session.ConfirmationRequestedAt.Should().NotBeNull();
     }
 
     [Fact]
-    public void Session_ClearPendingToolExecution_ClearsPendingState()
+    public void Session_ClearPendingBatchExecution_ClearsPendingState()
     {
         var session = new Session("test-session");
-        session.SetPendingToolExecution("call-1", "log_time", new Dictionary<string, object?>(), "Confirm?");
+        session.SetPendingBatchExecution(
+            [new ToolCallInfo("call-1", "log_time", new Dictionary<string, object?>())],
+            "Confirm?");
 
-        session.ClearPendingToolExecution();
+        session.ClearPendingBatchExecution();
 
         session.HasPendingConfirmation.Should().BeFalse();
-        session.PendingToolExecution.Should().BeNull();
+        session.PendingBatchExecution.Should().BeNull();
         session.ConfirmationRequestedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public void Session_AddToolCalls_AddsToHistory()
+    {
+        var session = new Session("test-session");
+        var toolCalls = new List<ToolCallInfo>
+        {
+            new("call-1", "log_time", new Dictionary<string, object?> { ["hours"] = 8 }),
+            new("call-2", "log_time", new Dictionary<string, object?> { ["hours"] = 4 })
+        };
+
+        session.AddToolCalls(toolCalls);
+
+        session.ConversationHistory.Should().HaveCount(1);
+        session.ConversationHistory[0].Role.Should().Be(ConversationRole.Assistant);
+        session.ConversationHistory[0].ToolCalls.Should().HaveCount(2);
+        session.ConversationHistory[0].Content.Should().BeNull();
     }
 }

@@ -73,13 +73,13 @@ public class AgentService : IAgentService
         // Check for expired confirmation
         if (session.HasPendingConfirmation && _sessionManager.IsConfirmationExpired(session))
         {
-            session.ClearPendingToolExecution();
+            session.ClearPendingBatchExecution();
         }
 
         // Handle pending confirmation
         if (session.HasPendingConfirmation)
         {
-            var pending = session.PendingToolExecution!;
+            var pending = session.PendingBatchExecution!;
             var confirmationType = await _confirmationDetector.DetectAsync(text, pending.ConfirmationPrompt);
 
             if (confirmationType == ConfirmationType.Confirmed)
@@ -89,7 +89,7 @@ public class AgentService : IAgentService
 
             if (confirmationType == ConfirmationType.Cancelled)
             {
-                session.ClearPendingToolExecution();
+                session.ClearPendingBatchExecution();
                 session.AddUserMessage(text);
                 var cancelText = "Cancelled. No changes made.";
                 session.AddAssistantMessage(cancelText);
@@ -97,7 +97,7 @@ public class AgentService : IAgentService
             }
 
             // Modification requested - clear pending and let agent handle with context
-            session.ClearPendingToolExecution();
+            session.ClearPendingBatchExecution();
         }
 
         // Add user message to history
@@ -109,27 +109,28 @@ public class AgentService : IAgentService
 
     private async Task<AgentResponse> ExecutePendingToolAsync(Session session, string userText)
     {
-        var pending = session.PendingToolExecution!;
-        session.ClearPendingToolExecution();
+        var pending = session.PendingBatchExecution!;
+        session.ClearPendingBatchExecution();
 
         // Add user confirmation to history
         session.AddUserMessage(userText);
 
-        // Execute the tool
-        string result;
-        using (var toolActivity = ActivitySource.StartActivity("mcp-tool-call"))
+        // Add all tool calls as one assistant message
+        session.AddToolCalls(pending.ToolCalls);
+
+        // Execute each tool and add results
+        foreach (var tc in pending.ToolCalls)
         {
-            toolActivity?.SetTag("tool.name", pending.ToolName);
-            toolActivity?.SetTag("tool.arguments", PrettyJson(JsonSerializer.Serialize(pending.Arguments)));
-
-            result = await _mcpClient.ExecuteToolAsync(pending.ToolName, pending.Arguments);
-
-            toolActivity?.SetTag("tool.result", PrettyJson(result));
+            string result;
+            using (var toolActivity = ActivitySource.StartActivity("mcp-tool-call"))
+            {
+                toolActivity?.SetTag("tool.name", tc.ToolName);
+                toolActivity?.SetTag("tool.arguments", PrettyJson(JsonSerializer.Serialize(tc.Arguments)));
+                result = await _mcpClient.ExecuteToolAsync(tc.ToolName, tc.Arguments);
+                toolActivity?.SetTag("tool.result", PrettyJson(result));
+            }
+            session.AddToolResult(tc.ToolCallId, tc.ToolName, result);
         }
-
-        // Add tool call and result to history — let agent loop produce a character-appropriate response
-        session.AddToolCall(pending.ToolCallId, pending.ToolName, pending.Arguments);
-        session.AddToolResult(pending.ToolCallId, pending.ToolName, result);
 
         return await RunAgentLoopAsync(session);
     }
@@ -165,51 +166,48 @@ public class AgentService : IAgentService
                 llmActivity?.SetTag("llm.response_payload", SerializeResponse(choice));
             }
 
-            // Check if LLM wants to call a tool
+            // Check if LLM wants to call tools
             if (choice.ToolCalls.Count > 0)
             {
-                var toolCall = choice.ToolCalls[0]; // Process one tool at a time
-                var toolName = toolCall.FunctionName;
-                var argsJson = toolCall.FunctionArguments.ToString();
-                var arguments = ParseToolArguments(argsJson);
+                var allCalls = choice.ToolCalls.Select(tc => new ToolCallInfo(
+                    tc.Id, tc.FunctionName, ParseToolArguments(tc.FunctionArguments.ToString()))).ToList();
 
-                // Check if destructive tool - require confirmation
-                if (DestructiveTools.Contains(toolName))
+                var destructiveCalls = allCalls.Where(tc => DestructiveTools.Contains(tc.ToolName)).ToList();
+
+                if (destructiveCalls.Count > 0)
                 {
-                    var (confirmationPrompt, confirmationSsml) = await GenerateConfirmationAsync(session, toolName, argsJson);
+                    // Any destructive tool in batch → hold ALL for batch confirmation
+                    var (confirmText, confirmSsml) = await GenerateBatchConfirmationAsync(session, allCalls);
+                    session.SetPendingBatchExecution(allCalls, confirmText);
+                    session.AddAssistantMessage(confirmText);
 
-                    session.SetPendingToolExecution(toolCall.Id, toolName, arguments, confirmationPrompt);
-                    session.AddAssistantMessage(confirmationPrompt);
-
-                    _logger.LogInformation("<<< Agent response (awaiting confirmation): {Text}", confirmationPrompt);
+                    _logger.LogInformation("<<< Agent response (awaiting batch confirmation for {Count} tools): {Text}", allCalls.Count, confirmText);
 
                     Activity.Current?.AddEvent(new ActivityEvent("confirmation-requested",
                         tags: new ActivityTagsCollection
                         {
-                            { "tool.name", toolName },
-                            { "confirmation.prompt", confirmationPrompt }
+                            { "tool.count", allCalls.Count },
+                            { "tool.names", string.Join(", ", allCalls.Select(tc => tc.ToolName)) },
+                            { "confirmation.prompt", confirmText }
                         }));
 
-                    return new AgentResponse { Text = confirmationPrompt, Ssml = confirmationSsml, AwaitingConfirmation = true };
+                    return new AgentResponse { Text = confirmText, Ssml = confirmSsml, AwaitingConfirmation = true };
                 }
 
-                // Non-destructive tool - execute immediately
-                toolCallCount++;
-                string result;
-                using (var toolActivity = ActivitySource.StartActivity("mcp-tool-call"))
+                // All non-destructive — execute all immediately
+                toolCallCount += allCalls.Count;
+                session.AddToolCalls(allCalls);
+                foreach (var tc in allCalls)
                 {
-                    toolActivity?.SetTag("tool.name", toolName);
-                    toolActivity?.SetTag("tool.arguments", PrettyJson(argsJson));
+                    using var toolActivity = ActivitySource.StartActivity("mcp-tool-call");
+                    toolActivity?.SetTag("tool.name", tc.ToolName);
+                    toolActivity?.SetTag("tool.arguments", PrettyJson(JsonSerializer.Serialize(tc.Arguments)));
 
-                    result = await _mcpClient.ExecuteToolAsync(toolName, arguments);
+                    var result = await _mcpClient.ExecuteToolAsync(tc.ToolName, tc.Arguments);
 
                     toolActivity?.SetTag("tool.result", PrettyJson(result));
+                    session.AddToolResult(tc.ToolCallId, tc.ToolName, result);
                 }
-
-                session.AddToolCall(toolCall.Id, toolName, arguments);
-                session.AddToolResult(toolCall.Id, toolName, result);
-
-                // Continue the loop to let LLM process the result
                 continue;
             }
 
@@ -258,6 +256,11 @@ TIME LOGGING:
 - Task defaults to ""Development"", date defaults to today
 - Ask naturally for missing info
 
+TOOL CALLING:
+- You can call up to {MaxToolCallsPerRequest} tools in a single response
+- If a task needs more operations than that, do the first batch and tell the user you'll continue with the next batch after
+- Prefer calling multiple tools at once over one-by-one when the operations are independent
+
 IMPORTANT:
 - Do NOT ask ""should I proceed?"" - just call the tool when ready
 - The system handles confirmation for destructive tools automatically
@@ -291,9 +294,18 @@ For the ssml field, use this Azure TTS template as the outer structure and enric
                     break;
 
                 case ConversationRole.Assistant:
-                    if (msg.ToolCallId != null && msg.ToolName != null && msg.ToolArguments != null)
+                    if (msg.ToolCalls is { Count: > 0 })
                     {
-                        // Assistant message with tool call
+                        // Batch tool calls — single assistant message with all calls
+                        var chatToolCalls = msg.ToolCalls.Select(tc =>
+                            ChatToolCall.CreateFunctionToolCall(
+                                tc.ToolCallId, tc.ToolName,
+                                BinaryData.FromString(JsonSerializer.Serialize(tc.Arguments)))).ToList();
+                        messages.Add(new AssistantChatMessage(chatToolCalls));
+                    }
+                    else if (msg.ToolCallId != null && msg.ToolName != null && msg.ToolArguments != null)
+                    {
+                        // Legacy single tool call
                         var toolCall = ChatToolCall.CreateFunctionToolCall(
                             msg.ToolCallId,
                             msg.ToolName,
@@ -413,12 +425,13 @@ For the ssml field, use this Azure TTS template as the outer structure and enric
                 case AssistantChatMessage asst:
                     if (asst.ToolCalls.Count > 0)
                     {
-                        var tc = asst.ToolCalls[0];
-                        serialized.Add(new
+                        var toolCalls = asst.ToolCalls.Select(tc => new
                         {
-                            role = "assistant",
-                            tool_call = new { id = tc.Id, function = tc.FunctionName, arguments = tc.FunctionArguments.ToString() }
+                            id = tc.Id,
+                            function = tc.FunctionName,
+                            arguments = tc.FunctionArguments.ToString()
                         });
+                        serialized.Add(new { role = "assistant", tool_calls = toolCalls });
                     }
                     else
                     {
@@ -516,16 +529,22 @@ For the ssml field, use this Azure TTS template as the outer structure and enric
         return (rawResponse, GenerateSsml(rawResponse, session));
     }
 
-    private async Task<(string plainText, string ssml)> GenerateConfirmationAsync(Session session, string toolName, string argsJson)
+    private async Task<(string plainText, string ssml)> GenerateBatchConfirmationAsync(
+        Session session, List<ToolCallInfo> toolCalls)
     {
         try
         {
-            // Build messages from current conversation, then append a follow-up asking the LLM to describe the action
             var messages = BuildChatMessages(session);
+
+            // Describe all operations
+            var descriptions = toolCalls.Select(tc =>
+                $"- {tc.ToolName}({JsonSerializer.Serialize(tc.Arguments)})").ToList();
+            var allOps = string.Join("\n", descriptions);
+
             messages.Add(new SystemChatMessage(
-                $"You decided to call {toolName} with arguments: {argsJson}. " +
-                "Describe to the user what you're about to do with specific details (project, hours, date, task — whatever applies). " +
-                "Ask for confirmation. Stay in character. Keep it to 1-2 sentences. Vary how you ask."));
+                $"You are about to execute {toolCalls.Count} operation(s):\n{allOps}\n\n" +
+                "Describe to the user what you're about to do with specific details. " +
+                "Ask for confirmation. Stay in character. Keep it concise. Vary how you ask."));
 
             var response = await _chatClient.CompleteChatAsync(messages);
             var raw = response.Value.Content.Count > 0 ? response.Value.Content[0].Text : null;
@@ -535,11 +554,21 @@ For the ssml field, use this Azure TTS template as the outer structure and enric
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to generate LLM confirmation for {Tool}, using static fallback", toolName);
+            _logger.LogWarning(ex, "Failed to generate LLM batch confirmation, using static fallback");
         }
 
-        var fallback = GenerateConfirmationPrompt(toolName, ParseToolArguments(argsJson));
+        var fallback = GenerateBatchConfirmationPrompt(toolCalls);
         return (fallback, GenerateSsml(fallback, session));
+    }
+
+    private static string GenerateBatchConfirmationPrompt(List<ToolCallInfo> toolCalls)
+    {
+        if (toolCalls.Count == 1)
+            return GenerateConfirmationPrompt(toolCalls[0].ToolName, toolCalls[0].Arguments);
+
+        // Group by tool name for summary
+        var groups = toolCalls.GroupBy(tc => tc.ToolName).Select(g => $"{g.Count()} {g.Key}");
+        return $"I'll execute {toolCalls.Count} operations ({string.Join(", ", groups)}). Say yes to confirm or no to cancel.";
     }
 
     private string GenerateSsml(string text, Session session)
