@@ -25,8 +25,7 @@ public class TtsService : ITtsService
 
         // Use raw SSML if provided, otherwise build from parameters
         var ssml = !string.IsNullOrEmpty(request.Ssml) ? request.Ssml : BuildSsml(request);
-        _logger.LogInformation("Calling Azure Speech API (streaming), using {SsmlSource}...",
-            !string.IsNullOrEmpty(request.Ssml) ? "provided SSML" : "built SSML");
+        _logger.LogInformation("Calling Azure Speech API (streaming)");
 
         // Use a channel to properly handle async streaming
         var channel = System.Threading.Channels.Channel.CreateUnbounded<byte[]>();

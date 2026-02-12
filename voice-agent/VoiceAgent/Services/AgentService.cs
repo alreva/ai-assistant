@@ -118,13 +118,11 @@ public class AgentService : IAgentService
         using (var toolActivity = ActivitySource.StartActivity("mcp-tool-call"))
         {
             toolActivity?.SetTag("tool.name", pending.ToolName);
-            toolActivity?.SetTag("tool.arguments", JsonSerializer.Serialize(pending.Arguments));
+            toolActivity?.SetTag("tool.arguments", PrettyJson(JsonSerializer.Serialize(pending.Arguments)));
 
             result = await _mcpClient.ExecuteToolAsync(pending.ToolName, pending.Arguments);
 
-            toolActivity?.SetTag("tool.result_length", result.Length);
-            if (result.Length <= 1000)
-                toolActivity?.SetTag("tool.result", result);
+            toolActivity?.SetTag("tool.result", PrettyJson(result));
         }
 
         // Add tool call and result to history
@@ -153,14 +151,13 @@ public class AgentService : IAgentService
                 options.Tools.Add(tool);
             }
 
-            _logger.LogInformation("Calling LLM with {MessageCount} messages and {ToolCount} tools",
-                messages.Count, tools.Count);
-
             ChatCompletion choice;
             using (var llmActivity = ActivitySource.StartActivity("llm-call"))
             {
+                var payloadMessages = SerializeMessages(messages);
                 llmActivity?.SetTag("llm.message_count", messages.Count);
                 llmActivity?.SetTag("llm.tool_count", tools.Count);
+                llmActivity?.SetTag("llm.request_payload", payloadMessages);
 
                 var response = await _chatClient.CompleteChatAsync(messages, options);
                 choice = response.Value;
@@ -168,9 +165,7 @@ public class AgentService : IAgentService
                 llmActivity?.SetTag("llm.input_tokens", choice.Usage?.InputTokenCount);
                 llmActivity?.SetTag("llm.output_tokens", choice.Usage?.OutputTokenCount);
                 llmActivity?.SetTag("llm.finish_reason", choice.FinishReason.ToString());
-
-                if (choice.Content.Count > 0)
-                    llmActivity?.SetTag("llm.response_text", choice.Content[0].Text?[..Math.Min(500, choice.Content[0].Text?.Length ?? 0)]);
+                llmActivity?.SetTag("llm.response_payload", SerializeResponse(choice));
             }
 
             // Check if LLM wants to call a tool
@@ -180,8 +175,6 @@ public class AgentService : IAgentService
                 var toolName = toolCall.FunctionName;
                 var argsJson = toolCall.FunctionArguments.ToString();
                 var arguments = ParseToolArguments(argsJson);
-
-                _logger.LogInformation("LLM requested tool: {Tool} with args: {Args}", toolName, argsJson);
 
                 // Check if destructive tool - require confirmation
                 if (DestructiveTools.Contains(toolName))
@@ -208,13 +201,11 @@ public class AgentService : IAgentService
                 using (var toolActivity = ActivitySource.StartActivity("mcp-tool-call"))
                 {
                     toolActivity?.SetTag("tool.name", toolName);
-                    toolActivity?.SetTag("tool.arguments", argsJson);
+                    toolActivity?.SetTag("tool.arguments", PrettyJson(argsJson));
 
                     result = await _mcpClient.ExecuteToolAsync(toolName, arguments);
 
-                    toolActivity?.SetTag("tool.result_length", result.Length);
-                    if (result.Length <= 1000)
-                        toolActivity?.SetTag("tool.result", result);
+                    toolActivity?.SetTag("tool.result", PrettyJson(result));
                 }
 
                 session.AddToolCall(toolCall.Id, toolName, arguments);
@@ -386,6 +377,72 @@ IMPORTANT:
     {
         var newProject = args.GetValueOrDefault("newProjectCode")?.ToString() ?? "the new project";
         return $"I'll move this entry to {newProject}. Say yes to confirm or no to cancel.";
+    }
+
+    private static string SerializeMessages(List<ChatMessage> messages)
+    {
+        var serialized = new List<object>();
+        foreach (var msg in messages)
+        {
+            switch (msg)
+            {
+                case SystemChatMessage sys:
+                    serialized.Add(new { role = "system", content = sys.Content[0].Text });
+                    break;
+                case UserChatMessage usr:
+                    serialized.Add(new { role = "user", content = usr.Content[0].Text });
+                    break;
+                case AssistantChatMessage asst:
+                    if (asst.ToolCalls.Count > 0)
+                    {
+                        var tc = asst.ToolCalls[0];
+                        serialized.Add(new
+                        {
+                            role = "assistant",
+                            tool_call = new { id = tc.Id, function = tc.FunctionName, arguments = tc.FunctionArguments.ToString() }
+                        });
+                    }
+                    else
+                    {
+                        serialized.Add(new { role = "assistant", content = asst.Content.Count > 0 ? asst.Content[0].Text : "" });
+                    }
+                    break;
+                case ToolChatMessage tool:
+                    serialized.Add(new { role = "tool", tool_call_id = tool.ToolCallId, content = tool.Content[0].Text });
+                    break;
+            }
+        }
+        return JsonSerializer.Serialize(serialized, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private static string SerializeResponse(ChatCompletion choice)
+    {
+        if (choice.ToolCalls.Count > 0)
+        {
+            var toolCalls = choice.ToolCalls.Select(tc => new
+            {
+                id = tc.Id,
+                function = tc.FunctionName,
+                arguments = tc.FunctionArguments.ToString()
+            });
+            return JsonSerializer.Serialize(new { tool_calls = toolCalls }, new JsonSerializerOptions { WriteIndented = true });
+        }
+
+        var text = choice.Content.Count > 0 ? choice.Content[0].Text : null;
+        return JsonSerializer.Serialize(new { text }, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private static string PrettyJson(string json)
+    {
+        try
+        {
+            var doc = JsonDocument.Parse(json);
+            return JsonSerializer.Serialize(doc, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            return json;
+        }
     }
 
     private string GenerateSsml(string text, Session session)

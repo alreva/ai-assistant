@@ -88,12 +88,13 @@ public class WebSocketHandler
             parentContext);
 
         activity?.SetTag("session.id", request.SessionId);
-        activity?.SetTag("tts.text_length", request.Text.Length);
+        activity?.SetTag("tts.text", request.Text);
         activity?.SetTag("tts.voice", request.Voice);
+        if (!string.IsNullOrEmpty(request.Ssml))
+            activity?.SetTag("tts.ssml", request.Ssml);
 
         try
         {
-            _logger.LogInformation("Synthesizing: {Text}", request.Text[..Math.Min(50, request.Text.Length)]);
             var chunkCount = 0;
             await _ttsService.SynthesizeToStreamAsync(
                 request,
