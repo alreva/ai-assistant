@@ -18,17 +18,35 @@ from .backends import create_backend
 _connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
 if _connection_string:
     try:
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.sdk.resources import Resource
-        from azure.monitor.opentelemetry.exporter import AzureMonitorTraceExporter
+        # Prevent Azure resource detector from hanging on non-Azure machines
+        os.environ.setdefault("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "otel")
+        os.environ.setdefault("OTEL_SERVICE_NAME", "stt-server")
 
-        resource = Resource.create({"service.name": "stt-server"})
-        provider = TracerProvider(resource=resource)
-        exporter = AzureMonitorTraceExporter(connection_string=_connection_string)
-        provider.add_span_processor(BatchSpanProcessor(exporter))
-        trace.set_tracer_provider(provider)
+        # Suppress Azure SDK HTTP noise before distro sends any requests
         logging.getLogger("azure").setLevel(logging.WARNING)
+
+        # Save console handlers before distro reconfigures logging
+        _root = logging.getLogger()
+        _saved_handlers = list(_root.handlers)
+
+        from azure.monitor.opentelemetry import configure_azure_monitor
+        configure_azure_monitor(
+            connection_string=_connection_string,
+            instrumentation_options={
+                "flask": {"enabled": False},
+                "django": {"enabled": False},
+                "fastapi": {"enabled": False},
+                "psycopg2": {"enabled": False},
+                "requests": {"enabled": False},
+                "urllib": {"enabled": False},
+                "urllib3": {"enabled": False},
+            },
+        )
+
+        # Restore console handlers removed by the distro
+        for _h in _saved_handlers:
+            if _h not in _root.handlers:
+                _root.addHandler(_h)
     except Exception as _e:
         logging.getLogger(__name__).warning(f"Azure Monitor telemetry unavailable: {_e}")
 

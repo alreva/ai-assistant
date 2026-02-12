@@ -6,10 +6,7 @@ using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using OpenTelemetry;
-using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
-using Azure.Monitor.OpenTelemetry.Exporter;
+using Azure.Monitor.OpenTelemetry.AspNetCore;
 using VoiceAgent.Handlers;
 using VoiceAgent.Models;
 using VoiceAgent.Services;
@@ -57,12 +54,13 @@ var connectionString = Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_C
 if (!string.IsNullOrEmpty(connectionString))
 {
     builder.Services.AddOpenTelemetry()
-        .ConfigureResource(r => r.AddService("voice-agent"))
-        .WithTracing(t =>
+        .WithTracing(t => t.AddSource("VoiceAgent"))
+        .UseAzureMonitor(o =>
         {
-            t.AddSource("VoiceAgent");
-            t.AddAzureMonitorTraceExporter(o => o.ConnectionString = connectionString);
+            o.ConnectionString = connectionString;
+            o.SamplingRatio = 1.0f;
         });
+    Environment.SetEnvironmentVariable("OTEL_SERVICE_NAME", "voice-agent");
 }
 
 var app = builder.Build();

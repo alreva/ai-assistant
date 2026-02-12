@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir \
     webrtcvad>=2.0.10 \
     opentelemetry-api>=1.29.0 \
     opentelemetry-sdk>=1.29.0 \
-    azure-monitor-opentelemetry-exporter>=1.0.0b33
+    azure-monitor-opentelemetry>=1.6.4
 
 # Production stage
 FROM python:3.11-slim

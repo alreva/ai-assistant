@@ -3,10 +3,7 @@ using System.Net.WebSockets;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using OpenTelemetry;
-using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
-using Azure.Monitor.OpenTelemetry.Exporter;
+using Azure.Monitor.OpenTelemetry.AspNetCore;
 using SpeechService.Handlers;
 using SpeechService.Services;
 
@@ -30,12 +27,13 @@ var connectionString = Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_C
 if (!string.IsNullOrEmpty(connectionString))
 {
     builder.Services.AddOpenTelemetry()
-        .ConfigureResource(r => r.AddService("speech-service"))
-        .WithTracing(t =>
+        .WithTracing(t => t.AddSource("SpeechService"))
+        .UseAzureMonitor(o =>
         {
-            t.AddSource("SpeechService");
-            t.AddAzureMonitorTraceExporter(o => o.ConnectionString = connectionString);
+            o.ConnectionString = connectionString;
+            o.SamplingRatio = 1.0f;
         });
+    Environment.SetEnvironmentVariable("OTEL_SERVICE_NAME", "speech-service");
 }
 
 var app = builder.Build();
