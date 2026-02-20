@@ -10,20 +10,34 @@ using SpeechService.Services;
 var builder = Host.CreateApplicationBuilder(args);
 
 // Configuration
-var port = int.Parse(Environment.GetEnvironmentVariable("SPEECH_PORT") ?? "8767");
+var config = builder.Configuration;
+var port = int.Parse(config["SPEECH_PORT"] ?? "8767");
+var ttsProvider = config["TTS_PROVIDER"] ?? "azure";
 
-// Register services
-builder.Services.AddSingleton(new AzureSpeechConfig
+// Register TTS provider
+if (ttsProvider.Equals("elevenlabs", StringComparison.OrdinalIgnoreCase))
 {
-    Region = Environment.GetEnvironmentVariable("AzureSpeech__Region") ?? "",
-    ApiKey = Environment.GetEnvironmentVariable("AzureSpeech__ApiKey") ?? ""
-});
+    builder.Services.AddSingleton(new ElevenLabsConfig
+    {
+        ApiKey = config["ElevenLabs:ApiKey"] ?? "",
+        ModelId = config["ElevenLabs:ModelId"] ?? "eleven_multilingual_v2"
+    });
+    builder.Services.AddSingleton<ITtsService, ElevenLabsTtsService>();
+}
+else
+{
+    builder.Services.AddSingleton(new AzureSpeechConfig
+    {
+        Region = config["AzureSpeech:Region"] ?? "",
+        ApiKey = config["AzureSpeech:ApiKey"] ?? ""
+    });
+    builder.Services.AddSingleton<ITtsService, AzureTtsService>();
+}
 
-builder.Services.AddSingleton<ITtsService, TtsService>();
 builder.Services.AddSingleton<WebSocketHandler>();
 
 // OpenTelemetry
-var connectionString = Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING");
+var connectionString = config["APPLICATIONINSIGHTS_CONNECTION_STRING"];
 if (!string.IsNullOrEmpty(connectionString))
 {
     builder.Services.AddOpenTelemetry()

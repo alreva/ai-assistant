@@ -5,12 +5,12 @@ using SpeechService.Models;
 
 namespace SpeechService.Services;
 
-public class TtsService : ITtsService
+public class AzureTtsService : ITtsService
 {
     private readonly AzureSpeechConfig _config;
-    private readonly ILogger<TtsService> _logger;
+    private readonly ILogger<AzureTtsService> _logger;
 
-    public TtsService(AzureSpeechConfig config, ILogger<TtsService> logger)
+    public AzureTtsService(AzureSpeechConfig config, ILogger<AzureTtsService> logger)
     {
         _config = config;
         _logger = logger;
